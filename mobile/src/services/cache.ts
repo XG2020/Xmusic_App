@@ -51,6 +51,12 @@ export async function cachedGet<T>(
   return v;
 }
 
+/** 丢弃指定键的缓存（内存+持久化），供下拉刷新等强制重拉场景使用 */
+export function dropCache(key: string) {
+  mem.delete(key);
+  AsyncStorage.removeItem(PREFIX + key).catch(() => {});
+}
+
 /**
  * 批量读缓存（不触发请求）：返回命中的 key->值 映射，未命中/过期的不含在内。
  * 供按 mid 粒度缓存播放直链等「批量键」场景使用。

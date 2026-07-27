@@ -27,6 +27,15 @@ export async function downloadToAppDir(url: string, filename: string) {
   throw new Error(`下载失败: ${ret.statusCode}`);
 }
 
+/** 本应用下载文件名中的音质后缀，如 "歌名 [SQ 无损].flac" */
+export const QUALITY_TAG_RE =
+  /\s*\[(标准|HQ 高品质|SQ 无损|臻品音质|臻品全景声|臻品母带)\]$/;
+
+/** 附件基础名：去扩展名与音质后缀，同一首歌不同音质共用歌词/封面/元数据 */
+function companionBase(audioPath: string): string {
+  return audioPath.replace(/\.[^.]+$/, '').replace(QUALITY_TAG_RE, '');
+}
+
 /**
  * 附带下载封面（同名 .jpg）、歌词（同名 .lrc）与元数据（同名 .json），
  * 任一失败不影响主文件。返回实际成功的附件类型列表。
@@ -35,7 +44,7 @@ export async function downloadCompanions(
   audioPath: string,
   opts: {coverUrl?: string; lyric?: string; song?: Song},
 ): Promise<string[]> {
-  const base = audioPath.replace(/\.[^.]+$/, '');
+  const base = companionBase(audioPath);
   const done: string[] = [];
   if (opts.coverUrl && /^https?:/i.test(opts.coverUrl)) {
     try {
@@ -68,6 +77,11 @@ export async function downloadCompanions(
         singer: s.singer,
         album: s.album,
         interval: s.interval,
+        // 封面在线直链一并保存，.jpg 下载失败时播放页仍可在线显示
+        coverUrl:
+          opts.coverUrl && /^https?:/i.test(opts.coverUrl)
+            ? opts.coverUrl
+            : undefined,
       };
       await RNFS.writeFile(`${base}.json`, JSON.stringify(meta), 'utf8');
       done.push('元数据');
@@ -86,8 +100,9 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
   if (!s.localPath) {
     return s;
   }
-  const base = s.localPath.replace(/\.[^.]+$/, '');
+  const base = companionBase(s.localPath);
   const out: Song = {...s};
+  let metaCover: string | undefined;
   try {
     const raw = await RNFS.readFile(`${base}.json`, 'utf8');
     const meta = JSON.parse(raw);
@@ -96,6 +111,9 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
     out.singer = out.singer?.length ? out.singer : meta.singer;
     out.album = out.album ?? meta.album;
     out.interval = out.interval ?? meta.interval;
+    if (typeof meta.coverUrl === 'string' && /^https?:/i.test(meta.coverUrl)) {
+      metaCover = meta.coverUrl;
+    }
   } catch (e) {
     // 无元数据文件（非本应用下载的歌曲）
   }
@@ -109,15 +127,47 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
       // 封面探测失败忽略
     }
   }
+  if (!out.coverUrl && metaCover) {
+    // 本地 .jpg 不存在时退回元数据里的在线封面直链
+    out.coverUrl = metaCover;
+  }
   return out;
 }
 
 /** 读取本地歌曲同名 .lrc 歌词（下载时保存），不存在时返回空串 */
 export async function readLocalLyric(audioPath: string): Promise<string> {
-  const base = audioPath.replace(/\.[^.]+$/, '');
+  const base = companionBase(audioPath);
   try {
     return await RNFS.readFile(`${base}.lrc`, 'utf8');
   } catch (e) {
     return '';
+  }
+}
+
+/**
+ * 删除本地歌曲及其附件（歌词/封面/元数据）；
+ * 同基础名还有其他音质的音频文件时保留共用附件。
+ * 主文件删除失败直接抛出，由调用方提示。
+ */
+export async function deleteLocalSongWithCompanions(audioPath: string) {
+  await RNFS.unlink(audioPath);
+  const base = companionBase(audioPath);
+  try {
+    const dir = audioPath.slice(0, audioPath.lastIndexOf('/'));
+    const items = await RNFS.readDir(dir);
+    const stillUsed = items.some(
+      i =>
+        i.isFile() &&
+        /\.(mp3|flac|m4a|wav|aac|ogg|wma)$/i.test(i.name) &&
+        companionBase(i.path) === base,
+    );
+    if (stillUsed) {
+      return;
+    }
+  } catch (e) {
+    // 目录扫描失败时仍继续清理附件
+  }
+  for (const ext of ['.lrc', '.jpg', '.json']) {
+    await RNFS.unlink(`${base}${ext}`).catch(() => {});
   }
 }

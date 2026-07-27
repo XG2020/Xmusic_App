@@ -36,6 +36,8 @@ type Props = {
   /** 为 null 时隐藏弹层 */
   song: Song | null;
   onClose: () => void;
+  /** 收藏/歌单数据发生变更后回调，供宿主页面刷新列表 */
+  onChanged?: () => void;
   /** 场景专属操作（如删除本地文件、从歌单移除），显示在通用操作之后 */
   extraActions?: SongAction[];
 };
@@ -43,7 +45,12 @@ type Props = {
 /**
  * 歌曲长按操作弹层：下一曲播放 / 收藏 / 添加到歌单（可新建）
  */
-export default function SongActionSheet({song, onClose, extraActions}: Props) {
+export default function SongActionSheet({
+  song,
+  onClose,
+  onChanged,
+  extraActions,
+}: Props) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const [panel, setPanel] = useState<'main' | 'pls'>('main');
@@ -79,6 +86,7 @@ export default function SongActionSheet({song, onClose, extraActions}: Props) {
     }
     const now = await toggleFav(song);
     onClose();
+    onChanged?.();
     AppAlert.alert(now ? '已添加到"我喜欢"' : '已取消收藏', song.title);
   };
 
@@ -93,6 +101,9 @@ export default function SongActionSheet({song, onClose, extraActions}: Props) {
     }
     const added = await addSongsToPlaylist(pl.id, [song]);
     onClose();
+    if (added) {
+      onChanged?.();
+    }
     AppAlert.alert(
       added ? `已添加到《${pl.name}》` : '歌曲已在该歌单中',
       song.title,
@@ -110,6 +121,7 @@ export default function SongActionSheet({song, onClose, extraActions}: Props) {
     }
     await createLocalPlaylist(name, [song], song.coverUrl);
     onClose();
+    onChanged?.();
     AppAlert.alert('已创建歌单', `《${name}》已收录「${song.title}」`);
   };
 

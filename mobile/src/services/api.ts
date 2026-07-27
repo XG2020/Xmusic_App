@@ -1,7 +1,7 @@
 import axios from 'axios';
 import {BASE_URL, DEFAULT_QUALITY} from '../constants/config';
 import {getPlayQuality} from './settings';
-import {cachedGet, cachePeekMany, cachePutMany} from './cache';
+import {cachedGet, cachePeekMany, cachePutMany, dropCache} from './cache';
 import type {Playlist, Song} from '../types/music';
 
 const api = axios.create({
@@ -169,8 +169,11 @@ export type RankInfo = {
   top3?: {title: string; singerName: string}[];
 };
 
-/** 榜单列表（/api/top 不带 id，返回分组的所有榜单） */
-export async function getTopGroups(): Promise<RankInfo[]> {
+/** 榜单列表（/api/top 不带 id，返回分组的所有榜单）；force 丢弃缓存强制重拉 */
+export async function getTopGroups(force?: boolean): Promise<RankInfo[]> {
+  if (force) {
+    dropCache('topGroups');
+  }
   return cachedGet('topGroups', TTL_TOP, async () => {
     const {data} = await api.get('/api/top');
     const groups: any[] = data?.data?.group ?? [];

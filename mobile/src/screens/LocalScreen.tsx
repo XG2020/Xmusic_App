@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import RNFS from 'react-native-fs';
 import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import {
   scanLocalSongs,
@@ -26,6 +25,7 @@ import {
   autoOpenPlayerEnabled,
 } from '../services/settings';
 import {playSongs} from '../services/player';
+import {deleteLocalSongWithCompanions} from '../services/download';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
 import {formatDuration} from '../utils/format';
@@ -139,7 +139,8 @@ export default function LocalScreen({navigation}: any) {
         style: 'destructive',
         onPress: async () => {
           try {
-            await RNFS.unlink(song.localPath!);
+            // 连同歌词/封面/元数据附件一起删除
+            await deleteLocalSongWithCompanions(song.localPath!);
             setSongs(prev => prev.filter(s => s.localPath !== song.localPath));
           } catch (e) {
             AppAlert.alert('删除失败', '文件可能已被移除或没有删除权限');

@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   Image,
   StatusBar,
+  RefreshControl,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useRecentSongs} from '../services/store';
@@ -22,12 +23,27 @@ export default function HomeScreen({navigation}: any) {
   // 最近播放实时订阅（切歌/清空自动刷新）
   const recents = useRecentSongs();
   const [ranks, setRanks] = useState<RankInfo[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadRanks = useCallback(async (force?: boolean) => {
+    try {
+      const list = await getTopGroups(force);
+      setRanks(list.slice(0, 6));
+    } catch (e) {
+      // 保留旧数据，静默失败
+    }
+  }, []);
 
   useEffect(() => {
-    getTopGroups()
-      .then(list => setRanks(list.slice(0, 6)))
-      .catch(() => {});
-  }, []);
+    loadRanks();
+  }, [loadRanks]);
+
+  // 下拉刷新：丢弃缓存重拉榜单（最近播放已实时订阅无需手动刷新）
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadRanks(true);
+    setRefreshing(false);
+  }, [loadRanks]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -57,7 +73,16 @@ export default function HomeScreen({navigation}: any) {
         </View>
       </TouchableOpacity>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[t.primary]}
+            progressBackgroundColor={t.card}
+          />
+        }>
         {/* 最近播放 */}
         {recents.length > 0 && (
           <>

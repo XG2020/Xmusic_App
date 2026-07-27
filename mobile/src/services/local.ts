@@ -1,6 +1,7 @@
 import {NativeModules, Platform} from 'react-native';
 import RNFS from 'react-native-fs';
 import {getScanFolders} from './settings';
+import {enrichLocalSong, QUALITY_TAG_RE} from './download';
 import type {Song} from '../types/music';
 
 const {LocalMusic} = NativeModules;
@@ -23,10 +24,6 @@ function isAudioFile(name: string) {
   const lower = name.toLowerCase();
   return AUDIO_EXT.some(ext => lower.endsWith(ext));
 }
-
-/** 本应用下载文件名中的音质后缀，如 "歌名 [SQ 无损].flac" */
-const QUALITY_TAG_RE =
-  /\s*\[(标准|HQ 高品质|SQ 无损|臻品音质|臻品全景声|臻品母带)\]$/;
 
 /** 从文件名解析 "歌手 - 歌名"（去掉本应用下载时附加的音质后缀） */
 function songFromPath(path: string): Song {
@@ -109,7 +106,23 @@ export async function scanLocalSongs(): Promise<Song[]> {
       }
     }
   }
-  return Array.from(byPath.values()).sort((a, b) =>
+  // 本应用下载的歌曲：读同名 .json/.jpg 补全歌手/专辑/封面
+  //（MediaStore 对无标签文件返回未知歌手，列表靠元数据纠正）
+  const merged = await Promise.all(
+    Array.from(byPath.values()).map(s =>
+      enrichLocalSong(s).catch(() => s),
+    ),
+  );
+  // MediaStore 标签与元数据都缺歌手时，退回文件名「歌手 - 歌名」解析
+  for (const s of merged) {
+    if (!s.singer?.length && s.localPath) {
+      const parsed = songFromPath(s.localPath);
+      if (parsed.singer?.length) {
+        s.singer = parsed.singer;
+      }
+    }
+  }
+  return merged.sort((a, b) =>
     a.title.localeCompare(b.title, 'zh-Hans-CN'),
   );
 }

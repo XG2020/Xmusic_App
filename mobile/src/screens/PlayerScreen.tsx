@@ -25,10 +25,7 @@ import {useTheme, Theme} from '../theme';
 import {useSpin} from '../utils/useSpin';
 import {startDownload} from '../services/downloadManager';
 import {useSleepTimer} from '../services/sleepTimer';
-import {
-  Quality,
-  QUALITY_OPTIONS,
-} from '../services/settings';
+import {Quality, QUALITY_OPTIONS} from '../services/settings';
 import {
   PlayMode,
   getPlayMode,
@@ -139,6 +136,40 @@ export default function PlayerScreen({navigation}: any) {
     pagerRef.current?.setNativeProps({scrollEnabled: !locked});
   };
 
+  // 下滑收起：顶栏与歌曲页支持下拉跟手位移，超过阈值或快速下甩后收起
+  const dragY = useRef(new Animated.Value(0)).current;
+  const springBack = () => {
+    Animated.spring(dragY, {
+      toValue: 0,
+      useNativeDriver: true,
+      friction: 7,
+      tension: 60,
+    }).start();
+  };
+  const dismissResponder = useRef(
+    PanResponder.create({
+      // 仅接管明确向下为主的拖动，不影响点击与横向翻页
+      onMoveShouldSetPanResponder: (_e, g) =>
+        g.dy > 12 && g.dy > Math.abs(g.dx) * 1.5,
+      onPanResponderGrant: () => lockPager(true),
+      onPanResponderMove: (_e, g) => {
+        dragY.setValue(Math.max(g.dy, 0));
+      },
+      onPanResponderRelease: (_e, g) => {
+        lockPager(false);
+        if (g.dy > 120 || g.vy > 0.8) {
+          navigation.goBack();
+        } else {
+          springBack();
+        }
+      },
+      onPanResponderTerminate: () => {
+        lockPager(false);
+        springBack();
+      },
+    }),
+  ).current;
+
   const clampRatio = (x: number) =>
     Math.min(Math.max(barWidthRef.current ? x / barWidthRef.current : 0, 0), 1);
 
@@ -194,9 +225,7 @@ export default function PlayerScreen({navigation}: any) {
     if (!progress.duration) {
       return;
     }
-    seekTo(
-      Math.min(Math.max(progress.position + delta, 0), progress.duration),
-    );
+    seekTo(Math.min(Math.max(progress.position + delta, 0), progress.duration));
   };
 
   /** 下载入口：先选音质 */
@@ -247,175 +276,180 @@ export default function PlayerScreen({navigation}: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* 顶部栏：收起 + 同级页签（详情｜歌曲｜歌词） */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-          <Text style={styles.headerBtn}>⌄</Text>
-        </TouchableOpacity>
-        <View style={styles.tabs}>
-          {PAGES.map((label, i) => (
-            <React.Fragment key={label}>
-              {i > 0 && <Text style={styles.tabDivider}>|</Text>}
-              <TouchableOpacity onPress={() => goPage(i)}>
-                <Text style={[styles.tab, page === i && styles.tabActive]}>
-                  {label}
-                </Text>
-              </TouchableOpacity>
-            </React.Fragment>
-          ))}
-        </View>
-        <View style={styles.headerRight} />
-      </View>
-
-      {/* 左右滑动同级三页 */}
-      <ScrollView
-        ref={pagerRef}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        contentOffset={{x: SCREEN_W, y: 0}}
-        onLayout={onPagerLayout}
-        onMomentumScrollEnd={e =>
-          setPage(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))
-        }>
-        {/* 页 1：歌曲详情 */}
-        <View style={styles.page}>
-          <SongDetailView />
+      {/* 下滑收起：整屏内容跟手下移 */}
+      <Animated.View
+        style={[styles.dragWrap, {transform: [{translateY: dragY}]}]}>
+        {/* 顶部栏：收起 + 同级页签（详情｜歌曲｜歌词），支持下滑收起 */}
+        <View style={styles.header} {...dismissResponder.panHandlers}>
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            <Text style={styles.headerBtn}>⌄</Text>
+          </TouchableOpacity>
+          <View style={styles.tabs}>
+            {PAGES.map((label, i) => (
+              <React.Fragment key={label}>
+                {i > 0 && <Text style={styles.tabDivider}>|</Text>}
+                <TouchableOpacity onPress={() => goPage(i)}>
+                  <Text style={[styles.tab, page === i && styles.tabActive]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              </React.Fragment>
+            ))}
+          </View>
+          <View style={styles.headerRight} />
         </View>
 
-        {/* 页 2：歌曲（播放主页） */}
-        <View style={styles.page}>
-          {/* 旋转唱片封面 */}
-          <View style={styles.discWrap}>
-            <Animated.View
-              style={[styles.disc, {transform: [{rotate}, {scale}]}]}>
-              {track?.artwork ? (
-                <Image
-                  source={{uri: String(track.artwork)}}
-                  style={styles.discCover}
-                />
-              ) : (
-                <View style={styles.discCenter}>
-                  <Text style={styles.discNote}>♪</Text>
-                </View>
-              )}
-            </Animated.View>
+        {/* 左右滑动同级三页 */}
+        <ScrollView
+          ref={pagerRef}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          contentOffset={{x: SCREEN_W, y: 0}}
+          onLayout={onPagerLayout}
+          onMomentumScrollEnd={e =>
+            setPage(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))
+          }>
+          {/* 页 1：歌曲详情 */}
+          <View style={styles.page}>
+            <SongDetailView />
           </View>
 
-          {/* 歌名 + 收藏（封面下方，参考 QQ 音乐） */}
-          <View style={styles.songInfo}>
-            <View style={styles.songTitleRow}>
-              <Text style={styles.songTitle} numberOfLines={1}>
-                {track?.title ?? '未在播放'}
-              </Text>
-              <TouchableOpacity
-                onPress={onToggleFav}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-                {fav ? (
-                  <Icon name="favOn" size={35} />
+          {/* 页 2：歌曲（播放主页），支持下滑收起 */}
+          <View style={styles.page} {...dismissResponder.panHandlers}>
+            {/* 旋转唱片封面 */}
+            <View style={styles.discWrap}>
+              <Animated.View
+                style={[styles.disc, {transform: [{rotate}, {scale}]}]}>
+                {track?.artwork ? (
+                  <Image
+                    source={{uri: String(track.artwork)}}
+                    style={styles.discCover}
+                  />
                 ) : (
-                  <Icon name="favOff" size={35} color={t.playerSub} />
+                  <View style={styles.discCenter}>
+                    <Text style={styles.discNote}>♪</Text>
+                  </View>
                 )}
+              </Animated.View>
+            </View>
+
+            {/* 歌名 + 收藏（封面下方，参考 QQ 音乐） */}
+            <View style={styles.songInfo}>
+              <View style={styles.songTitleRow}>
+                <Text style={styles.songTitle} numberOfLines={1}>
+                  {track?.title ?? '未在播放'}
+                </Text>
+                <TouchableOpacity
+                  onPress={onToggleFav}
+                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                  {fav ? (
+                    <Icon name="favOn" size={35} />
+                  ) : (
+                    <Icon name="favOff" size={35} color={t.playerSub} />
+                  )}
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.songArtist} numberOfLines={1}>
+                {track?.artist ?? ''}
+              </Text>
+            </View>
+
+            {/* 工具行（进度条右上方）：倍速 / 后退15s / 前进15s / 下载 */}
+            <View style={styles.dlRow}>
+              <TouchableOpacity
+                onPress={() => setSpeedSheet(true)}
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                <Icon
+                  name={rateIconName(rate)}
+                  size={40}
+                  color={rate !== 1 ? t.primary : t.playerSub}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => seekBy(-15)}
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                <Icon name="speedBack15" size={40} color={t.playerSub} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => seekBy(15)}
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                <Icon name="speedForward15" size={40} color={t.playerSub} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={onDownload}
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                <Icon name="downloadOutline" size={40} color={t.playerSub} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.songArtist} numberOfLines={1}>
-              {track?.artist ?? ''}
-            </Text>
-          </View>
 
-          {/* 工具行（进度条右上方）：倍速 / 后退15s / 前进15s / 下载 */}
-          <View style={styles.dlRow}>
-            <TouchableOpacity
-              onPress={() => setSpeedSheet(true)}
-              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-              <Icon
-                name={rateIconName(rate)}
-                size={40}
-                color={rate !== 1 ? t.primary : t.playerSub}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => seekBy(-15)}
-              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-              <Icon name="speedBack15" size={40} color={t.playerSub} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => seekBy(15)}
-              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-              <Icon name="speedForward15" size={40} color={t.playerSub} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={onDownload}
-              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-              <Icon name="downloadOutline" size={40} color={t.playerSub} />
-            </TouchableOpacity>
-          </View>
-
-          {/* 进度条（可点击/拖动定位） */}
-          <View style={styles.progress}>
-            <Text style={styles.time}>
-              {formatDuration(
-                dragPct !== null && progress.duration
-                  ? dragPct * progress.duration
-                  : progress.position,
-              )}
-            </Text>
-            <View
-              style={styles.barTouch}
-              onLayout={(e: LayoutChangeEvent) => {
-                barWidthRef.current = e.nativeEvent.layout.width;
-              }}
-              {...barResponder.panHandlers}>
-              <View style={styles.bar}>
-                <View style={[styles.barFill, {width: `${pct}%`}]} />
-                <View style={[styles.barDot, {left: `${pct}%`}]} />
+            {/* 进度条（可点击/拖动定位） */}
+            <View style={styles.progress}>
+              <Text style={styles.time}>
+                {formatDuration(
+                  dragPct !== null && progress.duration
+                    ? dragPct * progress.duration
+                    : progress.position,
+                )}
+              </Text>
+              <View
+                style={styles.barTouch}
+                onLayout={(e: LayoutChangeEvent) => {
+                  barWidthRef.current = e.nativeEvent.layout.width;
+                }}
+                {...barResponder.panHandlers}>
+                <View style={styles.bar}>
+                  <View style={[styles.barFill, {width: `${pct}%`}]} />
+                  <View style={[styles.barDot, {left: `${pct}%`}]} />
+                </View>
               </View>
+              <Text style={styles.time}>
+                {formatDuration(progress.duration)}
+              </Text>
             </View>
-            <Text style={styles.time}>
-              {formatDuration(progress.duration)}
-            </Text>
+
+            {/* 播放控制 */}
+            <View style={styles.controls}>
+              <TouchableOpacity onPress={cycleMode}>
+                <Icon name={MODE_ICON[mode]} size={45} color={t.playerSub} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => skipToPrevious()}>
+                <Icon name="prev" size={30} color={t.playerText} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.playBtn}
+                onPress={() =>
+                  playing ? TrackPlayer.pause() : TrackPlayer.play()
+                }>
+                <Icon
+                  name={playing ? 'pause' : 'play'}
+                  size={26}
+                  color="#fff"
+                  style={playing ? undefined : styles.playIconShift}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => skipToNext(mode)}>
+                <Icon name="next" size={30} color={t.playerText} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('SleepTimer')}>
+                <Icon
+                  name="timer"
+                  size={35}
+                  color={sleepRemain > 0 ? t.primary : t.playerSub}
+                />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* 播放控制 */}
-          <View style={styles.controls}>
-            <TouchableOpacity onPress={cycleMode}>
-              <Icon name={MODE_ICON[mode]} size={45} color={t.playerSub} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => skipToPrevious()}>
-              <Icon name="prev" size={30} color={t.playerText} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.playBtn}
-              onPress={() =>
-                playing ? TrackPlayer.pause() : TrackPlayer.play()
-              }>
-              <Icon
-                name={playing ? 'pause' : 'play'}
-                size={26}
-                color="#fff"
-                style={playing ? undefined : styles.playIconShift}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => skipToNext(mode)}>
-              <Icon name="next" size={30} color={t.playerText} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => navigation.navigate('SleepTimer')}>
-              <Icon
-                name="timer"
-                size={35}
-                color={sleepRemain > 0 ? t.primary : t.playerSub}
-              />
-            </TouchableOpacity>
+          {/* 页 3：歌词 */}
+          <View style={styles.page}>
+            <LyricView />
           </View>
-        </View>
-
-        {/* 页 3：歌词 */}
-        <View style={styles.page}>
-          <LyricView />
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </Animated.View>
 
       {/* 下载音质选择弹层 */}
       <Modal
@@ -508,6 +542,7 @@ function trackToSong(track: any): Song {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.playerBg},
+    dragWrap: {flex: 1},
     header: {
       flexDirection: 'row',
       alignItems: 'center',

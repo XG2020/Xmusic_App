@@ -1,8 +1,12 @@
 import {useEffect, useState} from 'react';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {getSongUrls, getLyric, albumCoverUrl} from './api';
-import {resolveDownloadDir, downloadCompanions} from './download';
+import {getSongUrls, getLyric, getSongDetail, albumCoverUrl} from './api';
+import {
+  resolveDownloadDir,
+  downloadCompanions,
+  deleteLocalSongWithCompanions,
+} from './download';
 import {
   Quality,
   qualityOption,
@@ -116,7 +120,12 @@ export async function startDownload(
       // 从直链推断真实格式（服务端可能降级），失败按音质兜底
       const extMatch = url.match(/\.(flac|mp3|m4a|ogg|ape|wav)(\?|$)/i);
       const ext = extMatch ? extMatch[1].toLowerCase() : opt.ext;
-      const safeName = String(song.title ?? 'song').replace(/[\\/:*?"<>|]/g, '');
+      // 文件名带歌手前缀（歌手 - 歌名），本地扫描无标签时也能解析出歌手
+      const artistPart = song.singer?.map(s => s.name).join('、') ?? '';
+      const rawName = artistPart
+        ? `${artistPart} - ${song.title ?? 'song'}`
+        : String(song.title ?? 'song');
+      const safeName = rawName.replace(/[\\/:*?"<>|]/g, '');
       const dir = await resolveDownloadDir();
       const dest = `${dir}/${safeName} [${opt.label}].${ext}`;
       const ret = await RNFS.downloadFile({
@@ -144,10 +153,18 @@ export async function startDownload(
           lyric = (await getLyric({mid: song.mid}))?.lyric || undefined;
         } catch (e) {}
       }
-      // 封面：歌曲自带地址优先，缺失时用专辑 mid 拼官方 CDN 直链兜底
-      const coverUrl = wantCover
+      // 封面三级兜底：歌曲自带地址 → 专辑 mid 拼 CDN 直链 → 详情接口取专辑再拼
+      let coverUrl = wantCover
         ? song.coverUrl ?? albumCoverUrl(song.album)
         : undefined;
+      if (wantCover && !coverUrl && song.mid) {
+        try {
+          const detail = await getSongDetail({mid: song.mid});
+          coverUrl = albumCoverUrl(detail?.album);
+        } catch (e) {
+          // 详情接口失败放弃封面
+        }
+      }
       await downloadCompanions(dest, {coverUrl, lyric, song});
       finishTask({...task, status: 'done', progress: 1, path: dest});
     } catch (e: any) {
@@ -173,7 +190,8 @@ export async function removeDownloadRecord(
   );
   saveHistory();
   if (deleteFile && task.path) {
-    await RNFS.unlink(task.path).catch(() => {});
+    // 连同歌词/封面/元数据附件一起删除
+    await deleteLocalSongWithCompanions(task.path).catch(() => {});
   }
   notify();
 }

@@ -94,8 +94,10 @@ function KaraokeLine({
   const posRef = useRef(position);
   posRef.current = position;
   const [boxW, setBoxW] = useState(0);
-  // 单行文字用实际文字宽，避免绿色扫过尾部空白；折行时整块宽度扫过
-  const [textW, setTextW] = useState(0);
+  // 每个视觉行的位置尺寸：折行时逐行推进绿色，避免所有行同时横向染色
+  const [lineBoxes, setLineBoxes] = useState<
+    {x: number; y: number; width: number; height: number}[]
+  >([]);
 
   // QRC 逐字分段：每个字占的宽度份额按字符数比例，时间用真实起止
   const segs = useMemo(() => {
@@ -215,57 +217,82 @@ function KaraokeLine({
     }
   }, [position, fracAt, resync]);
 
-  const clipW = textW > 0 ? textW : boxW;
+  const totalW = lineBoxes.reduce((s, l) => s + l.width, 0);
+  let accW = 0;
   return (
     <View onLayout={e => setBoxW(e.nativeEvent.layout.width)}>
       <Text
         style={[styles.line, styles.lineActive]}
-        onTextLayout={e => {
-          const ls = e.nativeEvent.lines;
-          setTextW(ls.length === 1 ? ls[0].width : 0);
-        }}>
+        onTextLayout={e =>
+          setLineBoxes(
+            e.nativeEvent.lines.map(l => ({
+              x: l.x,
+              y: l.y,
+              width: l.width,
+              height: l.height,
+            })),
+          )
+        }>
         {text}
       </Text>
-      {boxW > 0 && clipW > 0 && (
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.karaokeClip,
-            {
-              width: clipW,
-              transform: [
+      {boxW > 0 &&
+        totalW > 0 &&
+        lineBoxes.map((ln, i) => {
+          const c0 = accW / totalW;
+          accW += ln.width;
+          const c1 = accW / totalW;
+          if (ln.width <= 0 || c1 <= c0) {
+            return null;
+          }
+          // 每个视觉行一个裁剪窗口，同一动画值按行宽份额分段插值
+          return (
+            <Animated.View
+              key={i}
+              pointerEvents="none"
+              style={[
+                styles.karaokeClip,
                 {
-                  translateX: anim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [-clipW, 0],
-                    extrapolate: 'clamp',
-                  }),
+                  left: ln.x,
+                  top: ln.y,
+                  width: ln.width,
+                  height: ln.height,
+                  transform: [
+                    {
+                      translateX: anim.interpolate({
+                        inputRange: [c0, c1],
+                        outputRange: [-ln.width, 0],
+                        extrapolate: 'clamp',
+                      }),
+                    },
+                  ],
                 },
-              ],
-            },
-          ]}>
-          <Animated.Text
-            style={[
-              styles.line,
-              styles.lineActive,
-              {
-                color: fillColor,
-                width: boxW,
-                transform: [
+              ]}>
+              <Animated.Text
+                style={[
+                  styles.line,
+                  styles.lineActive,
                   {
-                    translateX: anim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [clipW, 0],
-                      extrapolate: 'clamp',
-                    }),
+                    color: fillColor,
+                    width: boxW,
+                    position: 'absolute',
+                    left: -ln.x,
+                    top: -ln.y,
+                    transform: [
+                      {
+                        translateX: anim.interpolate({
+                          inputRange: [c0, c1],
+                          outputRange: [ln.width, 0],
+                          extrapolate: 'clamp',
+                        }),
+                      },
+                    ],
                   },
-                ],
-              },
-            ]}>
-            {text}
-          </Animated.Text>
-        </Animated.View>
-      )}
+                ]}>
+                {text}
+              </Animated.Text>
+            </Animated.View>
+          );
+        })}
     </View>
   );
 }
@@ -587,12 +614,9 @@ const createStyles = (t: Theme) =>
       paddingRight: 28,
     },
     lineActive: {color: t.playerText, fontWeight: '700'},
-    // 卡拉OK染色裁剪容器（宽度/位移在组件内动态设置）
+    // 卡拉OK染色裁剪窗口（位置/尺寸按视觉行在组件内动态设置）
     karaokeClip: {
       position: 'absolute',
-      left: 0,
-      top: 0,
-      bottom: 0,
       overflow: 'hidden',
     },
     trans: {

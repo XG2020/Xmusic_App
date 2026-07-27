@@ -239,7 +239,7 @@ export default function SettingsScreen({navigation}: any) {
               text: '去下载',
               onPress: () =>
                 Linking.openURL(
-                  latest.url || 'https://github.com/XG2020/xmusic/releases',
+                  latest.url || 'https://github.com/XG2020/Xmusic_App/releases',
                 ).catch(() => {}),
             },
           ],

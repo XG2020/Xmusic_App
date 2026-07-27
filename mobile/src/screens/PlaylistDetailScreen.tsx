@@ -12,7 +12,8 @@ import {
 import {AppAlert} from '../components/AppDialog';
 import {useFocusEffect} from '@react-navigation/native';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import RNFS from 'react-native-fs';
+import {startDownload} from '../services/downloadManager';
+import {deleteLocalSongWithCompanions} from '../services/download';
 import {
   getLocalPlaylist,
   removeSongFromPlaylist,
@@ -28,7 +29,6 @@ import {
 import {resolveSongUrls} from '../services/api';
 import {playSongsProgressive} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
-import {startDownload} from '../services/downloadManager';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
 import {useTheme, Theme} from '../theme';
@@ -226,7 +226,8 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
       }
       if (alsoDeleteFile && song.localPath) {
         try {
-          await RNFS.unlink(song.localPath);
+          // 连同歌词/封面/元数据附件一起删除
+          await deleteLocalSongWithCompanions(song.localPath);
         } catch (e) {
           AppAlert.alert('文件删除失败', '已移出歌单，但文件可能已被移除或无权限');
         }
@@ -641,6 +642,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
       <SongActionSheet
         song={actionSong}
         onClose={() => setActionSong(null)}
+        onChanged={load}
         extraActions={
           actionSong
             ? [
