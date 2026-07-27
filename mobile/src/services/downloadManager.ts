@@ -1,9 +1,15 @@
 import {useEffect, useState} from 'react';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {getSongUrls, getLyric} from './api';
+import {getSongUrls, getLyric, albumCoverUrl} from './api';
 import {resolveDownloadDir, downloadCompanions} from './download';
-import {Quality, qualityOption, getDownloadQuality} from './settings';
+import {
+  Quality,
+  qualityOption,
+  getDownloadQuality,
+  getDownloadLyric,
+  getDownloadCover,
+} from './settings';
 import type {Song} from '../types/music';
 
 /**
@@ -127,14 +133,22 @@ export async function startDownload(
       if (ret.statusCode < 200 || ret.statusCode >= 300) {
         throw new Error(`下载失败: ${ret.statusCode}`);
       }
-      // 附带封面歌词与元数据（失败不影响主文件）
+      // 附带封面歌词与元数据（受设置开关控制，失败不影响主文件）
+      const [wantLyric, wantCover] = await Promise.all([
+        getDownloadLyric(),
+        getDownloadCover(),
+      ]);
       let lyric: string | undefined;
-      if (song.mid) {
+      if (wantLyric && song.mid) {
         try {
           lyric = (await getLyric({mid: song.mid}))?.lyric || undefined;
         } catch (e) {}
       }
-      await downloadCompanions(dest, {coverUrl: song.coverUrl, lyric, song});
+      // 封面：歌曲自带地址优先，缺失时用专辑 mid 拼官方 CDN 直链兜底
+      const coverUrl = wantCover
+        ? song.coverUrl ?? albumCoverUrl(song.album)
+        : undefined;
+      await downloadCompanions(dest, {coverUrl, lyric, song});
       finishTask({...task, status: 'done', progress: 1, path: dest});
     } catch (e: any) {
       finishTask({...task, status: 'error', error: e?.message ?? String(e)});

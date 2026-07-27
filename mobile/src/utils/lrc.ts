@@ -45,3 +45,69 @@ export function findActiveLine(lines: LrcLine[], position: number): number {
   }
   return active;
 }
+
+/** QRC 逐字歌词：单个字/词的演唱起止时间（秒） */
+export type QrcWord = {
+  start: number;
+  dur: number;
+  text: string;
+};
+
+export type QrcLine = {
+  time: number; // 行开始（秒）
+  end: number; // 行结束（秒）
+  text: string;
+  words: QrcWord[];
+};
+
+/**
+ * 解析 QRC 逐字歌词（XML 中 LyricContent 内容）
+ * 行格式：[行起始ms,行时长ms]字(起始ms,时长ms)字(起始ms,时长ms)...
+ */
+export function parseQrc(xml: string): QrcLine[] {
+  if (!xml) {
+    return [];
+  }
+  // 从 XML 属性中提取歌词正文；拿不到就把整段文本当正文尝试
+  const m = xml.match(/LyricContent\s*=\s*"([\s\S]*?)"\s*\/?>/);
+  let content = m ? m[1] : xml;
+  content = content
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+  const lines: QrcLine[] = [];
+  for (const raw of content.split(/\r?\n/)) {
+    const lm = raw.match(/^\[(\d+),(\d+)\]/);
+    if (!lm) {
+      continue;
+    }
+    const lineStart = Number(lm[1]);
+    const lineDur = Number(lm[2]);
+    const body = raw.slice(lm[0].length);
+    const words: QrcWord[] = [];
+    const wordRe = /([^(]*)\((\d+),(\d+)\)/g;
+    let wm: RegExpExecArray | null;
+    let text = '';
+    while ((wm = wordRe.exec(body)) !== null) {
+      text += wm[1];
+      words.push({
+        start: Number(wm[2]) / 1000,
+        dur: Number(wm[3]) / 1000,
+        text: wm[1],
+      });
+    }
+    const trimmed = text.trim();
+    if (!trimmed || !words.length) {
+      continue;
+    }
+    lines.push({
+      time: lineStart / 1000,
+      end: (lineStart + lineDur) / 1000,
+      text: trimmed,
+      words,
+    });
+  }
+  return lines.sort((a, b) => a.time - b.time);
+}

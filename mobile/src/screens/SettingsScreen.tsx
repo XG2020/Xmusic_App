@@ -31,6 +31,10 @@ import {
   setAutoOpenPlayer,
   getShowRankTab,
   setShowRankTab,
+  getDownloadLyric,
+  setDownloadLyric,
+  getDownloadCover,
+  setDownloadCover,
 } from '../services/settings';
 import {applyQualityToCurrent} from '../services/player';
 import {useSleepTimer, formatSleepRemaining} from '../services/sleepTimer';
@@ -87,6 +91,9 @@ export default function SettingsScreen({navigation}: any) {
   const [autoOpen, setAutoOpen] = useState(true);
   // 底栏排行榜入口
   const [showRank, setShowRank] = useState(true);
+  // 下载附件：同时下载歌词/封面
+  const [dlLyric, setDlLyric] = useState(true);
+  const [dlCover, setDlCover] = useState(true);
 
   const refreshCacheSize = () => {
     getCacheBytes().then(setCacheBytes).catch(() => {});
@@ -99,6 +106,8 @@ export default function SettingsScreen({navigation}: any) {
     getMaxCacheMb().then(setMaxCacheMbState);
     getAutoOpenPlayer().then(setAutoOpen);
     getShowRankTab().then(setShowRank);
+    getDownloadLyric().then(setDlLyric);
+    getDownloadCover().then(setDlCover);
     refreshCacheSize();
   }, []);
 
@@ -110,6 +119,16 @@ export default function SettingsScreen({navigation}: any) {
   const onToggleShowRank = (on: boolean) => {
     setShowRank(on);
     setShowRankTab(on).catch(() => {});
+  };
+
+  const onToggleDlLyric = (on: boolean) => {
+    setDlLyric(on);
+    setDownloadLyric(on).catch(() => {});
+  };
+
+  const onToggleDlCover = (on: boolean) => {
+    setDlCover(on);
+    setDownloadCover(on).catch(() => {});
   };
 
   // ===== 音质 =====
@@ -283,6 +302,25 @@ export default function SettingsScreen({navigation}: any) {
             setDirModal(true);
             openDirBrowser(downloadDir || STORAGE_ROOT);
           })}
+          {/* 开关行：下载时同时下载歌词/封面 */}
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>下载时同时下载歌词</Text>
+            <Switch
+              value={dlLyric}
+              onValueChange={onToggleDlLyric}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>下载时同时下载封面</Text>
+            <Switch
+              value={dlCover}
+              onValueChange={onToggleDlCover}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
         </View>
 
         {/* 功能与服务 */}

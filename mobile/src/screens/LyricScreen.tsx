@@ -10,101 +10,22 @@ import {
   Clipboard,
   ToastAndroid,
   Platform,
-  TextStyle,
-  StyleProp,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
-import {useActiveTrack, useProgress} from 'react-native-track-player';
+import TrackPlayer, {
+  State,
+  useActiveTrack,
+  usePlaybackState,
+  useProgress,
+} from 'react-native-track-player';
 import {getLyric} from '../services/api';
 import {readLocalLyric} from '../services/download';
-import {parseLrc, findActiveLine, LrcLine} from '../utils/lrc';
+import {parseLrc, parseQrc, findActiveLine, LrcLine, QrcWord} from '../utils/lrc';
 import {seekTo} from '../services/player';
 import {formatDuration} from '../utils/format';
 import {useTheme, Theme} from '../theme';
 
-/**
- * 卡拉OK逐字染色行：底层文字 + 顶层绿色文字（宽度按进度裁剪）
- * fraction 为该行已唱进度 0~1，每次进度刷新用线性动画平滑推进
- */
-function KaraokeLine({
-  text,
-  fraction,
-  baseStyle,
-  fillColor,
-}: {
-  text: string;
-  fraction: number;
-  baseStyle: StyleProp<TextStyle>;
-  fillColor: string;
-}) {
-  const anim = useRef(new Animated.Value(0)).current;
-  const first = useRef(true);
-  const [boxW, setBoxW] = useState(0);
-  // 单行文字时取实际文字的起点与宽度，避免绿色从空白处开始扫
-  const [textArea, setTextArea] = useState<{left: number; width: number} | null>(
-    null,
-  );
-
-  useEffect(() => {
-    if (first.current) {
-      // 首次（切到该行时）直接定位，不做从 0 开始的突兀动画
-      first.current = false;
-      anim.setValue(fraction);
-      return;
-    }
-    Animated.timing(anim, {
-      toValue: fraction,
-      duration: 500,
-      easing: Easing.linear,
-      useNativeDriver: false, // 宽度动画不支持原生驱动
-    }).start();
-  }, [fraction, anim]);
-
-  const areaLeft = textArea?.left ?? 0;
-  const areaWidth = textArea?.width ?? boxW;
-  const fillWidth = anim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, areaWidth],
-    extrapolate: 'clamp',
-  });
-
-  return (
-    <View onLayout={e => setBoxW(e.nativeEvent.layout.width)}>
-      <Text
-        style={baseStyle}
-        onTextLayout={e => {
-          const ls = e.nativeEvent.lines;
-          if (ls.length === 1) {
-            setTextArea({left: ls[0].x, width: ls[0].width});
-          } else {
-            setTextArea(null); // 多行折行时整行宽度扫过
-          }
-        }}>
-        {text}
-      </Text>
-      <Animated.View
-        pointerEvents="none"
-        style={{
-          position: 'absolute',
-          left: areaLeft,
-          top: 0,
-          bottom: 0,
-          width: fillWidth,
-          overflow: 'hidden',
-        }}>
-        {boxW > 0 && (
-          <Text
-            style={[baseStyle, {color: fillColor, width: boxW, marginLeft: -areaLeft}]}
-            numberOfLines={0}>
-            {text}
-          </Text>
-        )}
-      </Animated.View>
-    </View>
-  );
-}
-
-/** 聚焦行容器：成为当前播放行时轻微上浮 + 放大，失焦时还原 */
+/** 聚焦行容器：以左侧为锚点平滑放大，失焦缓和还原（纯原生驱动，无弹跳） */
 function FocusLine({
   active,
   children,
@@ -112,29 +33,24 @@ function FocusLine({
   active: boolean;
   children: React.ReactNode;
 }) {
-  const anim = useRef(new Animated.Value(0)).current;
+  const anim = useRef(new Animated.Value(active ? 1 : 0)).current;
   useEffect(() => {
-    Animated.spring(anim, {
+    Animated.timing(anim, {
       toValue: active ? 1 : 0,
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-      friction: 7,
-      tension: 60,
     }).start();
   }, [active, anim]);
   return (
     <Animated.View
       style={{
+        transformOrigin: 'left center',
         transform: [
           {
             scale: anim.interpolate({
               inputRange: [0, 1],
-              outputRange: [1, 1.06],
-            }),
-          },
-          {
-            translateY: anim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, -3],
+              outputRange: [1, 1.08],
             }),
           },
         ],
@@ -144,13 +60,294 @@ function FocusLine({
   );
 }
 
+type RowStyles = ReturnType<typeof createStyles>;
+
+/**
+ * 逐字卡拉OK染色（优化版，纯原生驱动）：
+ * - 不动画 width（JS 驱动会卡），改用「裁剪容器 + 内容反向位移」遮罩，
+ *   两个 translateX 都走 useNativeDriver，动画期间不占 JS 线程
+ * - 有 QRC 逐字时间轴时按每个字的真实演唱起止拼接动画序列，
+ *   绿色进度与演唱进度一致；无 QRC 时退回按行时长线性推进
+ * - 进度 tick 只做漂移校验（seek/暂停/倍速偏差 >10% 才重新对表）
+ */
+function KaraokeLine({
+  text,
+  styles,
+  fillColor,
+  start,
+  end,
+  position,
+  playing,
+  words,
+}: {
+  text: string;
+  styles: RowStyles;
+  fillColor: string;
+  start: number;
+  end: number;
+  position: number;
+  playing: boolean;
+  words?: QrcWord[];
+}) {
+  const anim = useRef(new Animated.Value(0)).current;
+  const valRef = useRef(0); // 监听器同步的当前动画值，供漂移校验
+  const posRef = useRef(position);
+  posRef.current = position;
+  const [boxW, setBoxW] = useState(0);
+  // 单行文字用实际文字宽，避免绿色扫过尾部空白；折行时整块宽度扫过
+  const [textW, setTextW] = useState(0);
+
+  // QRC 逐字分段：每个字占的宽度份额按字符数比例，时间用真实起止
+  const segs = useMemo(() => {
+    if (!words || !words.length) {
+      return null;
+    }
+    const total = words.reduce((s, w) => s + w.text.length, 0);
+    if (!total) {
+      return null;
+    }
+    let acc = 0;
+    return words.map(w => {
+      acc += w.text.length;
+      return {start: w.start, end: w.start + w.dur, frac: acc / total};
+    });
+  }, [words]);
+
+  /** 某播放位置对应的已唱比例（逐字分段插值，无 QRC 时按行线性） */
+  const fracAt = useCallback(
+    (pos: number) => {
+      if (!segs) {
+        const dur = Math.max(end - start, 0.3);
+        return Math.min(Math.max((pos - start) / dur, 0), 1);
+      }
+      let prev = 0;
+      for (const seg of segs) {
+        if (pos >= seg.end) {
+          prev = seg.frac;
+          continue;
+        }
+        if (pos <= seg.start) {
+          return prev; // 字间空隙：停在上一字末尾
+        }
+        return (
+          prev +
+          ((seg.frac - prev) * (pos - seg.start)) /
+            Math.max(seg.end - seg.start, 0.01)
+        );
+      }
+      return prev;
+    },
+    [segs, start, end],
+  );
+
+  useEffect(() => {
+    const id = anim.addListener(({value}) => {
+      valRef.current = value;
+    });
+    return () => anim.removeListener(id);
+  }, [anim]);
+
+  /** 从当前播放位置对表，并启动后续动画 */
+  const resync = useCallback(async () => {
+    const pos = posRef.current;
+    const frac = fracAt(pos);
+    anim.stopAnimation();
+    anim.setValue(frac);
+    valRef.current = frac;
+    if (!playing || frac >= 1) {
+      return;
+    }
+    let rate = 1;
+    try {
+      rate = (await TrackPlayer.getRate()) || 1;
+    } catch (e) {}
+    if (segs) {
+      // 逐字：按每个字真实起止时间拼动画序列，字间空隙用 delay 停顿
+      const steps: Animated.CompositeAnimation[] = [];
+      let cursor = pos;
+      let lastFrac = frac;
+      for (const seg of segs) {
+        if (seg.end <= cursor || seg.frac <= lastFrac) {
+          continue;
+        }
+        if (seg.start > cursor + 0.02) {
+          steps.push(Animated.delay(((seg.start - cursor) * 1000) / rate));
+          cursor = seg.start;
+        }
+        const durMs = Math.max(((seg.end - cursor) * 1000) / rate, 16);
+        steps.push(
+          Animated.timing(anim, {
+            toValue: seg.frac,
+            duration: durMs,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+        );
+        cursor = seg.end;
+        lastFrac = seg.frac;
+      }
+      if (steps.length) {
+        Animated.sequence(steps).start();
+      }
+      return;
+    }
+    const dur = Math.max(end - start, 0.3);
+    const remainMs = ((1 - frac) * dur * 1000) / rate;
+    if (remainMs > 32) {
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: remainMs,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [anim, segs, fracAt, start, end, playing]);
+
+  // 行切换/播放暂停恢复时对表
+  useEffect(() => {
+    resync();
+  }, [resync]);
+
+  // 每个进度 tick 做漂移校验（seek/倍速变化时重新对表）
+  useEffect(() => {
+    if (Math.abs(fracAt(position) - valRef.current) > 0.1) {
+      resync();
+    }
+  }, [position, fracAt, resync]);
+
+  const clipW = textW > 0 ? textW : boxW;
+  return (
+    <View onLayout={e => setBoxW(e.nativeEvent.layout.width)}>
+      <Text
+        style={[styles.line, styles.lineActive]}
+        onTextLayout={e => {
+          const ls = e.nativeEvent.lines;
+          setTextW(ls.length === 1 ? ls[0].width : 0);
+        }}>
+        {text}
+      </Text>
+      {boxW > 0 && clipW > 0 && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.karaokeClip,
+            {
+              width: clipW,
+              transform: [
+                {
+                  translateX: anim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-clipW, 0],
+                    extrapolate: 'clamp',
+                  }),
+                },
+              ],
+            },
+          ]}>
+          <Animated.Text
+            style={[
+              styles.line,
+              styles.lineActive,
+              {
+                color: fillColor,
+                width: boxW,
+                transform: [
+                  {
+                    translateX: anim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [clipW, 0],
+                      extrapolate: 'clamp',
+                    }),
+                  },
+                ],
+              },
+            ]}>
+            {text}
+          </Animated.Text>
+        </Animated.View>
+      )}
+    </View>
+  );
+}
+
+/** 单行歌词（memo：非聚焦行 props 稳定不重渲染，只有聚焦行随进度刷新） */
+const LyricRow = React.memo(function LyricRow({
+  text,
+  trans,
+  time,
+  end,
+  active,
+  position,
+  playing,
+  fillColor,
+  words,
+  timeOpacity,
+  styles,
+  onSeek,
+  onCopy,
+}: {
+  text: string;
+  trans?: string;
+  time: number;
+  end: number;
+  active: boolean;
+  position: number;
+  playing: boolean;
+  fillColor: string;
+  words?: QrcWord[];
+  timeOpacity: Animated.Value;
+  styles: RowStyles;
+  onSeek: (time: number) => void;
+  onCopy: (text: string) => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.lineRow}
+      activeOpacity={0.7}
+      onPress={() => onSeek(time)}
+      onLongPress={() => onCopy(text)}
+      delayLongPress={400}>
+      <FocusLine active={active}>
+        {active ? (
+          <KaraokeLine
+            text={text}
+            styles={styles}
+            fillColor={fillColor}
+            start={time}
+            end={end}
+            position={position}
+            playing={playing}
+            words={words}
+          />
+        ) : (
+          <Text style={styles.line}>{text}</Text>
+        )}
+        {!!trans && (
+          <Text style={[styles.trans, active && styles.transActive]}>
+            {trans}
+          </Text>
+        )}
+      </FocusLine>
+      {/* 时间气泡：仅聚焦行右侧显示，手滑时渐显 */}
+      {active && (
+        <Animated.View style={[styles.timeBubble, {opacity: timeOpacity}]}>
+          <Text style={styles.timeBubbleText}>{formatDuration(time)}</Text>
+        </Animated.View>
+      )}
+    </TouchableOpacity>
+  );
+});
+
 export default function LyricView() {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const track = useActiveTrack();
   const progress = useProgress(500);
+  const playing = usePlaybackState().state === State.Playing;
   const [lines, setLines] = useState<LrcLine[]>([]);
   const [transMap, setTransMap] = useState<Record<number, string>>({});
+  // QRC 逐字时间轴（按行下标对齐 lines，拿不到逐字数据时为空）
+  const [wordsMap, setWordsMap] = useState<Record<number, QrcWord[]>>({});
   const [loaded, setLoaded] = useState(false);
   const listRef = useRef<FlatList<LrcLine>>(null);
   const lastIndex = useRef(-1);
@@ -169,6 +366,7 @@ export default function LyricView() {
     let cancelled = false;
     setLines([]);
     setTransMap({});
+    setWordsMap({});
     setLoaded(false);
     (async () => {
       // 本地歌曲优先读同名 .lrc（下载时保存），离线也能显示歌词
@@ -191,16 +389,40 @@ export default function LyricView() {
         return;
       }
       try {
-        const data = await getLyric({mid, trans: true});
+        // 优先请求 QRC 逐字歌词，绿色进度才能和演唱进度一致
+        const data = await getLyric({mid, qrc: true, trans: true});
         if (cancelled) {
           return;
         }
-        const parsed = parseLrc(data?.lyric ?? '');
+        const raw = data?.lyric ?? '';
+        let parsed: LrcLine[] = [];
+        const qrcLines = parseQrc(raw);
+        if (qrcLines.length) {
+          parsed = qrcLines.map(l => ({time: l.time, text: l.text}));
+          const wm: Record<number, QrcWord[]> = {};
+          qrcLines.forEach((l, i) => {
+            wm[i] = l.words;
+          });
+          setWordsMap(wm);
+        } else {
+          // 无逐字数据（接口退回 LRC 文本）：按普通 LRC 解析
+          parsed = parseLrc(raw);
+          if (!parsed.length) {
+            const plain = await getLyric({mid, trans: true});
+            if (cancelled) {
+              return;
+            }
+            parsed = parseLrc(plain?.lyric ?? '');
+          }
+        }
         setLines(parsed);
-        // 翻译按时间对齐
+        // 翻译按时间对齐；「//」等无意义占位翻译（原文无需翻译的 Oh 等）不显示
         const trans = parseLrc(data?.trans ?? '');
         const map: Record<number, string> = {};
         for (const tl of trans) {
+          if (/^[\/\\\s]*$/.test(tl.text)) {
+            continue;
+          }
           const idx = parsed.findIndex(l => Math.abs(l.time - tl.time) < 0.5);
           if (idx >= 0) {
             map[idx] = tl.text;
@@ -224,20 +446,6 @@ export default function LyricView() {
     [lines, progress.position],
   );
   activeIndexRef.current = activeIndex;
-
-  // 当前行已唱进度 0~1（行时长 = 下一行时间 - 本行时间，末行用总时长兜底）
-  const activeFraction = useMemo(() => {
-    if (activeIndex < 0 || activeIndex >= lines.length) {
-      return 0;
-    }
-    const start = lines[activeIndex].time;
-    const end =
-      activeIndex + 1 < lines.length
-        ? lines[activeIndex + 1].time
-        : Math.max(progress.duration, start + 1);
-    const dur = Math.max(end - start, 0.3);
-    return Math.min(Math.max((progress.position - start) / dur, 0), 1);
-  }, [lines, activeIndex, progress.position, progress.duration]);
 
   // 自动滚动到当前行（用户手滑期间暂停）
   useEffect(() => {
@@ -332,47 +540,25 @@ export default function LyricView() {
           onScrollEndDrag={onUserScrollEnd}
           onMomentumScrollEnd={onUserScrollEnd}
           renderItem={({item, index}) => (
-            <TouchableOpacity
-              style={styles.lineRow}
-              onPress={() => seekTo(item.time)}
-              onLongPress={() => copyLine(item.text)}
-              delayLongPress={400}>
-              {/* 左侧对应播放时间：仅手滑时渐显 */}
-              <Animated.Text
-                style={[
-                  styles.lineTime,
-                  index === activeIndex && styles.lineTimeActive,
-                  {opacity: timeOpacity},
-                ]}>
-                {formatDuration(item.time)}
-              </Animated.Text>
-              <View style={styles.lineBody}>
-                <FocusLine active={index === activeIndex}>
-                  {index === activeIndex ? (
-                    // 当前行：逐字卡拉OK染色
-                    <KaraokeLine
-                      text={item.text}
-                      fraction={activeFraction}
-                      baseStyle={[styles.line, styles.lineActiveBase]}
-                      fillColor={t.primary}
-                    />
-                  ) : (
-                    <Text style={styles.line}>{item.text}</Text>
-                  )}
-                  {!!transMap[index] && (
-                    <Text
-                      style={[
-                        styles.trans,
-                        index === activeIndex && styles.transActive,
-                      ]}>
-                      {transMap[index]}
-                    </Text>
-                  )}
-                </FocusLine>
-              </View>
-              {/* 右侧占位，保持歌词视觉居中 */}
-              <View style={styles.lineSpace} />
-            </TouchableOpacity>
+            <LyricRow
+              text={item.text}
+              trans={transMap[index]}
+              time={item.time}
+              end={
+                index + 1 < lines.length
+                  ? lines[index + 1].time
+                  : Math.max(progress.duration, item.time + 1)
+              }
+              active={index === activeIndex}
+              position={index === activeIndex ? progress.position : 0}
+              playing={index === activeIndex ? playing : false}
+              fillColor={t.primary}
+              words={wordsMap[index]}
+              timeOpacity={timeOpacity}
+              styles={styles}
+              onSeek={seekTo}
+              onCopy={copyLine}
+            />
           )}
         />
       ) : (
@@ -389,33 +575,52 @@ export default function LyricView() {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1},
-    lyricList: {paddingVertical: 160, paddingHorizontal: 16},
-    lineRow: {flexDirection: 'row', alignItems: 'center'},
-    lineTime: {
-      width: 40,
-      fontSize: 10,
+    // 参考 QQ 音乐：左对齐、接近全宽，右侧留出放大与时间气泡空间
+    lyricList: {paddingVertical: 160, paddingLeft: 24, paddingRight: 30},
+    lineRow: {paddingVertical: 13, justifyContent: 'center'},
+    line: {
+      fontSize: 17,
       color: t.playerFaint,
       textAlign: 'left',
+      lineHeight: 25,
+      // 聚焦放大 1.08 倍时不撞右边界
+      paddingRight: 28,
     },
-    lineTimeActive: {color: t.primary, fontWeight: '700'},
-    lineBody: {flex: 1},
-    lineSpace: {width: 40},
-    line: {
-      fontSize: 15,
-      color: t.playerFaint,
-      textAlign: 'center',
-      lineHeight: 24,
-      marginVertical: 8,
+    lineActive: {color: t.playerText, fontWeight: '700'},
+    // 卡拉OK染色裁剪容器（宽度/位移在组件内动态设置）
+    karaokeClip: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      bottom: 0,
+      overflow: 'hidden',
     },
-    lineActiveBase: {color: t.playerText, fontSize: 17, fontWeight: '700'},
     trans: {
-      fontSize: 12,
+      fontSize: 13,
       color: t.playerFaint,
-      textAlign: 'center',
-      marginTop: -4,
-      marginBottom: 6,
+      textAlign: 'left',
+      lineHeight: 19,
+      marginTop: 4,
+      paddingRight: 28,
     },
-    transActive: {color: 'rgba(49,194,124,0.8)'},
+    transActive: {color: 'rgba(255,255,255,0.75)'},
+    // 聚焦行右侧时间气泡（仅手滑时渐显）
+    timeBubble: {
+      position: 'absolute',
+      right: -14,
+      top: 0,
+      bottom: 0,
+      justifyContent: 'center',
+    },
+    timeBubbleText: {
+      fontSize: 10,
+      color: t.playerText,
+      backgroundColor: 'rgba(255,255,255,0.14)',
+      paddingHorizontal: 6,
+      paddingVertical: 3,
+      borderRadius: 6,
+      overflow: 'hidden',
+    },
     placeholder: {flex: 1, alignItems: 'center', justifyContent: 'center'},
     placeholderText: {color: t.playerFaint, fontSize: 14},
   });

@@ -57,6 +57,37 @@ export async function setDownloadQuality(q: Quality) {
   await AsyncStorage.setItem(DOWNLOAD_QUALITY_KEY, q);
 }
 
+// ===== 下载附件开关（歌词/封面） =====
+
+const DL_LYRIC_KEY = 'dl_with_lyric';
+const DL_COVER_KEY = 'dl_with_cover';
+
+/** 下载歌曲时同时下载歌词（.lrc），默认开启 */
+export async function getDownloadLyric(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(DL_LYRIC_KEY)) !== '0';
+  } catch (e) {
+    return true;
+  }
+}
+
+export async function setDownloadLyric(on: boolean) {
+  await AsyncStorage.setItem(DL_LYRIC_KEY, on ? '1' : '0');
+}
+
+/** 下载歌曲时同时下载封面（.jpg），默认开启 */
+export async function getDownloadCover(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(DL_COVER_KEY)) !== '0';
+  } catch (e) {
+    return true;
+  }
+}
+
+export async function setDownloadCover(on: boolean) {
+  await AsyncStorage.setItem(DL_COVER_KEY, on ? '1' : '0');
+}
+
 // ===== 主题模式 =====
 
 export type ThemeMode = 'system' | 'light' | 'dark';

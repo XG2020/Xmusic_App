@@ -102,7 +102,8 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
   if (!out.coverUrl) {
     try {
       if (await RNFS.exists(`${base}.jpg`)) {
-        out.coverUrl = `file://${base}.jpg`;
+        // 路径含空格/中文/方括号，必须百分号编码，否则 RN Image 解析 file:// URI 失败
+        out.coverUrl = `file://${encodeURI(`${base}.jpg`).replace(/#/g, '%23')}`;
       }
     } catch (e) {
       // 封面探测失败忽略
