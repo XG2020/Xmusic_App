@@ -43,12 +43,6 @@ npm install
 npm run build-android
 ```
 
-GitHub Actions：
-
-- 已提供 `.github/workflows/android.yml`
-- 推送到 `main` 或 `master` 后会自动构建
-- 构建产物在 Actions 的 Artifacts 中下载
-
 ## 低内存与流畅性策略
 
 - 启用 Hermes
