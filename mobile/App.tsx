@@ -1,0 +1,46 @@
+/**
+ * QMusicLite - 仿 QQ 音乐播放器
+ *
+ * @format
+ */
+
+import React, {useEffect} from 'react';
+import {StatusBar} from 'react-native';
+import {SafeAreaProvider} from 'react-native-safe-area-context';
+import AppNavigator from './src/AppNavigator';
+import {AppDialogHost} from './src/components/AppDialog';
+import {setupPlayer, restoreLastSession} from './src/services/player';
+import {enforceCacheLimit} from './src/services/cacheManager';
+import {ThemeProvider, useTheme} from './src/theme';
+
+function AppInner(): React.JSX.Element {
+  const {t} = useTheme();
+  return (
+    <SafeAreaProvider>
+      <StatusBar
+        barStyle={t.isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={t.bg}
+      />
+      <AppNavigator />
+      <AppDialogHost />
+    </SafeAreaProvider>
+  );
+}
+
+function App(): React.JSX.Element {
+  useEffect(() => {
+    // 初始化失败不能阻塞 UI 启动；就绪后恢复上次播放会话（保持暂停）
+    setupPlayer()
+      .then(() => restoreLastSession())
+      .catch(() => {});
+    // 缓存超过上限时自动清理
+    enforceCacheLimit().catch(() => {});
+  }, []);
+  return (
+    <ThemeProvider>
+      <AppInner />
+    </ThemeProvider>
+  );
+}
+
+export default App;
