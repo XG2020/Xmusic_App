@@ -1,6 +1,6 @@
-# XMusic
+# XMusic(QmusicLite)
 
-一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线的安卓版代码。
+一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线，界面方向偏QQ音乐风格。
 
 ## 已接入能力
 
@@ -15,7 +15,7 @@
 ## 接口配置
 
 - 默认接口地址在 `src/constants/config.ts`
-- export const BASE_URL = 'api地址'
+- export const BASE_URL = 'api地址';
 - 生产环境请替换为你自己的部署地址
 
 ## 本地运行
