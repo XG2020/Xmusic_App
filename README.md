@@ -1,6 +1,6 @@
-# QMusicLite
+# XMusic
 
-一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线，界面方向偏 QQ 音乐安卓版。
+一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线的安卓版代码。
 
 ## 已接入能力
 
@@ -42,12 +42,6 @@ cd mobile
 npm install
 npm run build-android
 ```
-
-GitHub Actions：
-
-- 已提供 `.github/workflows/android.yml`
-- 推送到 `main` 或 `master` 后会自动构建
-- 构建产物在 Actions 的 Artifacts 中下载
 
 ## 低内存与流畅性策略
 
