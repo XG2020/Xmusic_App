@@ -236,6 +236,7 @@ export default function LocalScreen({navigation}: any) {
         </View>
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
           data={songs}
           keyExtractor={(item, i) => item.localPath ?? `${item.title}-${i}`}
           // 大列表渲染优化：分批渲染 + 收窄渲染窗口 + 裁剪离屏行
@@ -294,6 +295,7 @@ export default function LocalScreen({navigation}: any) {
                 {/* 已添加的文件夹列表 */}
                 <Text style={styles.sheetTitle}>自定义扫描文件夹</Text>
                 <FlatList
+                  showsVerticalScrollIndicator={false}
                   data={folders}
                   keyExtractor={p => p}
                   style={styles.sheetList}
@@ -344,6 +346,7 @@ export default function LocalScreen({navigation}: any) {
                   </View>
                 ) : (
                   <FlatList
+                    showsVerticalScrollIndicator={false}
                     data={browseDirs}
                     keyExtractor={d => d.path}
                     style={styles.sheetList}

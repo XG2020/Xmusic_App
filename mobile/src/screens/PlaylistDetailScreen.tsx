@@ -511,6 +511,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
       )}
 
       <FlatList
+        showsVerticalScrollIndicator={false}
         data={songs}
         keyExtractor={(item, i) => `${songKey(item)}-${i}`}
         // 大歌单渲染优化：分批渲染 + 收窄渲染窗口 + 裁剪离屏行
@@ -611,6 +612,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
               </TouchableOpacity>
             )}
             <FlatList
+              showsVerticalScrollIndicator={false}
               data={playlists.filter(p => p.id !== plId)}
               keyExtractor={p => p.id}
               style={styles.sheetList}

@@ -26,7 +26,12 @@ import {useTheme, Theme} from '../theme';
 import {useSpin} from '../utils/useSpin';
 import {startDownload} from '../services/downloadManager';
 import {useSleepTimer} from '../services/sleepTimer';
-import {Quality, QUALITY_OPTIONS} from '../services/settings';
+import {
+  Quality,
+  QUALITY_OPTIONS,
+  coverSpinEnabled,
+  subscribeCoverSpin,
+} from '../services/settings';
 import {
   PlayMode,
   getPlayMode,
@@ -181,8 +186,10 @@ export default function PlayerScreen({navigation}: any) {
 
   const playing = playback.state === State.Playing;
 
-  // 封面连续旋转动画（暂停停在原角度，恢复继续转）
-  const rotate = useSpin(playing, 20000);
+  // 封面连续旋转动画（暂停停在原角度，恢复继续转），可在设置中关闭
+  const [spinOn, setSpinOn] = useState(coverSpinEnabled());
+  useEffect(() => subscribeCoverSpin(setSpinOn), []);
+  const rotate = useSpin(playing && spinOn, 20000);
   // 播放/暂停时唱片轻微缩放，减少生硬感
   const scale = useRef(new Animated.Value(1)).current;
   useEffect(() => {

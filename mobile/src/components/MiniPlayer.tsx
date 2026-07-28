@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   Animated,
+  Easing,
+  Dimensions,
   PanResponder,
   Modal,
   FlatList,
@@ -26,6 +28,9 @@ import Icon from './Icon';
 import {useTheme, Theme} from '../theme';
 
 const SWIPE_THRESHOLD = 60;
+
+// 队列弹层上滑行程：覆盖面板最大高度（65% 屏高），保证首帧完全在屏外
+const SHEET_SLIDE = Dimensions.get('window').height * 0.65;
 
 // 播放按钮圆形进度环尺寸
 const RING_SIZE = 34;
@@ -189,6 +194,29 @@ export default function MiniPlayer() {
   const [queueSheet, setQueueSheet] = useState(false);
   const [queue, setQueue] = useState<Track[]>([]);
   const [activeIdx, setActiveIdx] = useState(-1);
+  // 弹层自绘动画：遮罩淡入 + 面板上滑（Modal 内置 slide 会连遮罩一起滑，观感差）
+  const sheetAnim = useRef(new Animated.Value(0)).current;
+  const openQueueSheet = () => {
+    sheetAnim.setValue(0);
+    setQueueSheet(true);
+  };
+  // Modal 挂载完成后再起动画，避免丢帧闪现
+  const onSheetShow = () => {
+    Animated.timing(sheetAnim, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+  const closeQueueSheet = () => {
+    Animated.timing(sheetAnim, {
+      toValue: 0,
+      duration: 160,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => setQueueSheet(false));
+  };
 
   const playing = playback.state === State.Playing;
   const rotate = useSpin(playing, 12000);
@@ -337,9 +365,7 @@ export default function MiniPlayer() {
           )}
         </PlayProgressRing>
       </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.listBtn}
-        onPress={() => setQueueSheet(true)}>
+      <TouchableOpacity style={styles.listBtn} onPress={openQueueSheet}>
         {/* 播放列表图标（logo 素材，弹层打开时高亮） */}
         <Icon
           name={queueSheet ? 'miniListHl' : 'miniList'}
@@ -348,71 +374,93 @@ export default function MiniPlayer() {
         />
       </TouchableOpacity>
 
-      {/* 播放队列弹层 */}
+      {/* 播放队列弹层（自绘动画：遮罩淡入 + 面板上滑，均走 native driver） */}
       <Modal
         visible={queueSheet}
         transparent
         statusBarTranslucent
-        animationType="slide"
-        onRequestClose={() => setQueueSheet(false)}>
-        <TouchableOpacity
-          style={styles.sheetMask}
-          activeOpacity={1}
-          onPress={() => setQueueSheet(false)}>
-          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
-            <Text style={styles.sheetTitle}>
-              当前播放 ({queue.length})
-            </Text>
-            <FlatList
-              data={queue}
-              keyExtractor={(item, i) => `${item.id ?? item.title}-${i}`}
-              style={styles.queueList}
-              initialScrollIndex={
-                activeIdx > 4 && queue.length > 8 ? activeIdx - 2 : 0
-              }
-              getItemLayout={(_, index) => ({
-                length: 44,
-                offset: 44 * index,
-                index,
-              })}
-              ListEmptyComponent={
-                <Text style={styles.queueEmpty}>播放队列为空</Text>
-              }
-              renderItem={({item, index}) => {
-                const active = index === activeIdx;
-                return (
-                  <TouchableOpacity
-                    style={styles.queueItem}
-                    onPress={() => playQueueItem(index)}>
-                    <Text
-                      style={[styles.queueNo, active && styles.queueActive]}>
-                      {active ? '♪' : index + 1}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.queueTitle,
-                        active && styles.queueActive,
-                      ]}
-                      numberOfLines={1}>
-                      {item.title}
-                      {item.artist ? (
-                        <Text style={styles.queueArtist}>
-                          {'  '}
-                          {item.artist}
-                        </Text>
-                      ) : null}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-            <TouchableOpacity
-              style={styles.sheetCancel}
-              onPress={() => setQueueSheet(false)}>
-              <Text style={styles.sheetCancelText}>关闭</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
+        animationType="none"
+        onShow={onSheetShow}
+        onRequestClose={closeQueueSheet}>
+        <Animated.View style={[styles.sheetMask, {opacity: sheetAnim}]}>
+          <TouchableOpacity
+            style={styles.sheetMaskTouch}
+            activeOpacity={1}
+            onPress={closeQueueSheet}>
+            <Animated.View
+              style={[
+                styles.sheet,
+                {
+                  transform: [
+                    {
+                      translateY: sheetAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [SHEET_SLIDE, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+              onStartShouldSetResponder={() => true}>
+              <Text style={styles.sheetTitle}>
+                当前播放 ({queue.length})
+              </Text>
+              <FlatList
+                showsVerticalScrollIndicator={false}
+                data={queue}
+                keyExtractor={(item, i) => `${item.id ?? item.title}-${i}`}
+                style={styles.queueList}
+                initialScrollIndex={
+                  activeIdx > 4 && queue.length > 8 ? activeIdx - 2 : 0
+                }
+                getItemLayout={(_, index) => ({
+                  length: 44,
+                  offset: 44 * index,
+                  index,
+                })}
+                initialNumToRender={12}
+                maxToRenderPerBatch={16}
+                windowSize={7}
+                removeClippedSubviews
+                ListEmptyComponent={
+                  <Text style={styles.queueEmpty}>播放队列为空</Text>
+                }
+                renderItem={({item, index}) => {
+                  const active = index === activeIdx;
+                  return (
+                    <TouchableOpacity
+                      style={styles.queueItem}
+                      onPress={() => playQueueItem(index)}>
+                      <Text
+                        style={[styles.queueNo, active && styles.queueActive]}>
+                        {active ? '♪' : index + 1}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.queueTitle,
+                          active && styles.queueActive,
+                        ]}
+                        numberOfLines={1}>
+                        {item.title}
+                        {item.artist ? (
+                          <Text style={styles.queueArtist}>
+                            {'  '}
+                            {item.artist}
+                          </Text>
+                        ) : null}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+              <TouchableOpacity
+                style={styles.sheetCancel}
+                onPress={closeQueueSheet}>
+                <Text style={styles.sheetCancelText}>关闭</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </TouchableOpacity>
+        </Animated.View>
       </Modal>
     </View>
   );
@@ -466,6 +514,9 @@ const createStyles = (t: Theme) =>
     sheetMask: {
       flex: 1,
       backgroundColor: 'rgba(0,0,0,0.55)',
+    },
+    sheetMaskTouch: {
+      flex: 1,
       justifyContent: 'flex-end',
     },
     sheet: {

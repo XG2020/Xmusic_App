@@ -161,6 +161,7 @@ export default function DownloadScreen({navigation}: any) {
       </View>
 
       <SectionList
+        showsVerticalScrollIndicator={false}
         sections={sections}
         keyExtractor={(item, i) => `${item.id}-${item.createdAt}-${i}`}
         renderItem={renderItem}

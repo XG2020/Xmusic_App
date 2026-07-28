@@ -188,6 +188,7 @@ export default function SearchScreen({navigation}: any) {
         <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
           data={results}
           keyExtractor={(item, i) => `${item.mid ?? item.title}-${i}`}
           initialNumToRender={12}

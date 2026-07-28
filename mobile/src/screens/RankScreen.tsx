@@ -8,6 +8,9 @@ import {
   Image,
   StyleSheet,
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -33,6 +36,14 @@ const FALLBACK_RANKS: RankInfo[] = [
   {topId: 4, title: '流行指数榜'},
   {topId: 62, title: '飙升榜'},
 ];
+
+// Android 旧架构下 LayoutAnimation 需显式开启（榜单选择区展开/收起过渡）
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 /**
  * 榜单歌曲只有 songId，播放前需要换取 mid 再取播放地址。
@@ -71,6 +82,12 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
+  // 榜单选择区展开态：收起=单行横滑，展开=换行网格全量显示
+  const [chipsExpanded, setChipsExpanded] = useState(false);
+  const toggleChips = (expanded: boolean) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setChipsExpanded(expanded);
+  };
 
   useEffect(() => {
     getTopGroups()
@@ -155,30 +172,60 @@ export default function RankScreen({navigation, route, lockPager}: any) {
         )}
         <Text style={styles.pageTitle}>排行榜</Text>
       </View>
-      {/* 榜单切换（触摸时锁住主页 pager，保证自身可横向滑动） */}
-      <View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chips}
-          onTouchStart={() => lockPager?.(true)}
-          onTouchEnd={() => lockPager?.(false)}
-          onTouchCancel={() => lockPager?.(false)}>
-          {ranks.map(r => (
-            <TouchableOpacity
-              key={r.topId}
-              style={[styles.chip, rankId === r.topId && styles.chipActive]}
-              onPress={() => setRankId(r.topId)}>
-              <Text
-                style={[
-                  styles.chipText,
-                  rankId === r.topId && styles.chipTextActive,
-                ]}>
-                {r.title}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+      {/* 榜单切换：收起时单行横滑（触摸锁住主页 pager），
+          点击右侧箭头展开为换行网格，选中榜单后自动收起 */}
+      <View style={styles.chipsRow}>
+        {chipsExpanded ? (
+          <View style={styles.chipsWrap}>
+            {ranks.map(r => (
+              <TouchableOpacity
+                key={r.topId}
+                style={[styles.chip, rankId === r.topId && styles.chipActive]}
+                onPress={() => {
+                  setRankId(r.topId);
+                  toggleChips(false);
+                }}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    rankId === r.topId && styles.chipTextActive,
+                  ]}>
+                  {r.title}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : (
+          <ScrollView
+            horizontal
+            style={styles.chipsScroll}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chips}
+            onTouchStart={() => lockPager?.(true)}
+            onTouchEnd={() => lockPager?.(false)}
+            onTouchCancel={() => lockPager?.(false)}>
+            {ranks.map(r => (
+              <TouchableOpacity
+                key={r.topId}
+                style={[styles.chip, rankId === r.topId && styles.chipActive]}
+                onPress={() => setRankId(r.topId)}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    rankId === r.topId && styles.chipTextActive,
+                  ]}>
+                  {r.title}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+        <TouchableOpacity
+          style={styles.expandBtn}
+          onPress={() => toggleChips(!chipsExpanded)}
+          hitSlop={{top: 8, bottom: 8, left: 4, right: 8}}>
+          <Text style={styles.expandArrow}>{chipsExpanded ? '▴' : '▾'}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* 播放全部 */}
@@ -194,6 +241,7 @@ export default function RankScreen({navigation, route, lockPager}: any) {
         <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
           data={songs}
           keyExtractor={(item, i) => String(item.id ?? `${item.title}-${i}`)}
           initialNumToRender={12}
@@ -269,7 +317,28 @@ const createStyles = (t: Theme) =>
       fontWeight: '800',
       color: t.text,
     },
+    chipsRow: {flexDirection: 'row', alignItems: 'flex-start'},
+    chipsScroll: {flex: 1},
     chips: {flexDirection: 'row', gap: 10, padding: 12},
+    // 展开态：换行网格（与收起态同样的边距与间隔）
+    chipsWrap: {
+      flex: 1,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+      padding: 12,
+    },
+    expandBtn: {
+      paddingLeft: 10,
+      paddingRight: 16,
+      paddingVertical: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+      // 与 chip 行高对齐（chip paddingVertical 7 + 字号 13）
+      height: 44,
+      minWidth: 48,
+    },
+    expandArrow: {fontSize: 22, color: t.sub, lineHeight: 24},
     chip: {
       paddingHorizontal: 16,
       paddingVertical: 7,

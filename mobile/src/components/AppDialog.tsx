@@ -108,7 +108,10 @@ export function AppDialogHost() {
           )}
           {vertical ? (
             // 竖排按钮多时（如选择合并歌单）可滚动，避免超出屏幕
-            <ScrollView style={styles.btnScroll} contentContainerStyle={styles.btnCol}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              style={styles.btnScroll}
+              contentContainerStyle={styles.btnCol}>
               {buttons.map((b, i) => (
                 <TouchableOpacity
                   key={`${b.text}-${i}`}

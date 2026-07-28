@@ -234,6 +234,7 @@ export default function SongActionSheet({
           ) : (
             <>
               <FlatList
+                showsVerticalScrollIndicator={false}
                 data={playlists}
                 keyExtractor={p => p.id}
                 style={styles.plList}

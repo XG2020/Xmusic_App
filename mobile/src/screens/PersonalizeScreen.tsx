@@ -252,7 +252,9 @@ export default function PersonalizeScreen({navigation}: any) {
         <View style={styles.backSpace} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.body}>
         {SLOT_GROUPS.map(group => (
           <View key={group.title}>
             <Text style={styles.groupTitle}>{group.title}</Text>
@@ -333,6 +335,7 @@ export default function PersonalizeScreen({navigation}: any) {
               </View>
             ) : (
               <FlatList
+                showsVerticalScrollIndicator={false}
                 data={entries}
                 keyExtractor={e => e.path}
                 style={styles.sheetList}

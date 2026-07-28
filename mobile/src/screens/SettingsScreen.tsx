@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Linking,
   Switch,
+  TextInput,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -31,11 +32,16 @@ import {
   setAutoOpenPlayer,
   getShowRankTab,
   setShowRankTab,
+  getCoverSpin,
+  setCoverSpin,
   getDownloadLyric,
   setDownloadLyric,
   getDownloadCover,
   setDownloadCover,
+  getDevUnlocked,
+  setDevUnlocked,
 } from '../services/settings';
+import {getCustomApiUrl, setCustomApiUrl} from '../services/api';
 import {applyQualityToCurrent} from '../services/player';
 import {useSleepTimer, formatSleepRemaining} from '../services/sleepTimer';
 import {listSubDirs, STORAGE_ROOT, DirEntry} from '../services/local';
@@ -52,6 +58,7 @@ import {
   formatBytes,
 } from '../services/cacheManager';
 import {APP_VERSION} from '../constants/config';
+import {md5} from '../utils/md5';
 
 const MODE_OPTIONS: {value: ThemeMode; label: string}[] = [
   {value: 'system', label: '跟随系统'},
@@ -91,9 +98,20 @@ export default function SettingsScreen({navigation}: any) {
   const [autoOpen, setAutoOpen] = useState(true);
   // 底栏排行榜入口
   const [showRank, setShowRank] = useState(true);
+  // 播放页封面旋转
+  const [spinOn, setSpinOn] = useState(true);
   // 下载附件：同时下载歌词/封面
   const [dlLyric, setDlLyric] = useState(true);
   const [dlCover, setDlCover] = useState(true);
+  // 开发者模式：连点版本号 5 次 -> 密钥校验 -> 自定义 API 接口
+  const verTapCount = useRef(0);
+  const verTapLast = useRef(0);
+  const devUnlocked = useRef(false);
+  const [keyModal, setKeyModal] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [apiModal, setApiModal] = useState(false);
+  const [apiInput, setApiInput] = useState('');
+  const [apiSaving, setApiSaving] = useState(false);
 
   const refreshCacheSize = () => {
     getCacheBytes().then(setCacheBytes).catch(() => {});
@@ -106,8 +124,12 @@ export default function SettingsScreen({navigation}: any) {
     getMaxCacheMb().then(setMaxCacheMbState);
     getAutoOpenPlayer().then(setAutoOpen);
     getShowRankTab().then(setShowRank);
+    getCoverSpin().then(setSpinOn);
     getDownloadLyric().then(setDlLyric);
     getDownloadCover().then(setDlCover);
+    getDevUnlocked().then(on => {
+      devUnlocked.current = on;
+    });
     refreshCacheSize();
   }, []);
 
@@ -119,6 +141,11 @@ export default function SettingsScreen({navigation}: any) {
   const onToggleShowRank = (on: boolean) => {
     setShowRank(on);
     setShowRankTab(on).catch(() => {});
+  };
+
+  const onToggleSpin = (on: boolean) => {
+    setSpinOn(on);
+    setCoverSpin(on).catch(() => {});
   };
 
   const onToggleDlLyric = (on: boolean) => {
@@ -254,6 +281,68 @@ export default function SettingsScreen({navigation}: any) {
     }
   };
 
+  // ===== 开发者模式 =====
+
+  // 开发者密钥不以明文出现：只保留密钥的 MD5，输入后哈希比对
+  const DEV_SECRET_MD5 = 'b769e214d2bedba287b3a898786c0c22';
+
+  /** 连点版本号：1.5 秒内累计 5 次触发；已解锁直接进接口设置，否则先验密钥 */
+  const onVersionTap = () => {
+    const now = Date.now();
+    if (now - verTapLast.current > 1500) {
+      verTapCount.current = 0;
+    }
+    verTapLast.current = now;
+    verTapCount.current += 1;
+    if (verTapCount.current < 5) {
+      return;
+    }
+    verTapCount.current = 0;
+    if (devUnlocked.current) {
+      openApiModal();
+    } else {
+      setKeyInput('');
+      setKeyModal(true);
+    }
+  };
+
+  /** 打开接口设置：仅回显自定义地址，内置接口地址不展示 */
+  const openApiModal = async () => {
+    setApiInput(await getCustomApiUrl());
+    setApiModal(true);
+  };
+
+  const onSubmitKey = () => {
+    if (md5(keyInput.trim()) !== DEV_SECRET_MD5) {
+      AppAlert.alert('密钥错误', '请输入正确的开发者密钥');
+      return;
+    }
+    devUnlocked.current = true;
+    setDevUnlocked(true).catch(() => {});
+    setKeyModal(false);
+    openApiModal();
+  };
+
+  /** 保存自定义接口；输入为空时恢复内置接口 */
+  const onSaveApi = async () => {
+    const url = apiInput.trim();
+    if (url && !/^https?:\/\/.+/i.test(url)) {
+      AppAlert.alert('地址无效', '请输入 http:// 或 https:// 开头的完整接口地址');
+      return;
+    }
+    setApiSaving(true);
+    try {
+      await setCustomApiUrl(url);
+      setApiModal(false);
+      AppAlert.alert(
+        url ? '已启用自定义接口' : '已恢复内置接口',
+        '后续所有请求将使用该接口',
+      );
+    } finally {
+      setApiSaving(false);
+    }
+  };
+
   /** 通用设置行：左标签 + 右值 + › */
   const renderRow = (
     label: string,
@@ -288,7 +377,9 @@ export default function SettingsScreen({navigation}: any) {
         <View style={styles.backSpace} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.body}>
         {/* 播放与下载 */}
         <Text style={styles.groupTitle}>播放与下载</Text>
         <View style={styles.group}>
@@ -354,6 +445,16 @@ export default function SettingsScreen({navigation}: any) {
               thumbColor="#fff"
             />
           </View>
+          {/* 开关行：播放页封面旋转（关闭后唱片静止，减少动画开销） */}
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>播放页封面旋转</Text>
+            <Switch
+              value={spinOn}
+              onValueChange={onToggleSpin}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
           {/* 开关行：底栏显示排行榜入口（关闭后首页榜单卡改为打开独立排行页） */}
           <View style={styles.row}>
             <Text style={styles.rowLabel}>底栏显示排行榜入口</Text>
@@ -382,7 +483,7 @@ export default function SettingsScreen({navigation}: any) {
         {/* 关于 */}
         <Text style={styles.groupTitle}>关于</Text>
         <View style={styles.group}>
-          {renderRow('当前版本', `v${APP_VERSION}`, undefined, false)}
+          {renderRow('当前版本', `v${APP_VERSION}`, onVersionTap, false)}
           {renderRow('检查更新', checking ? '检查中…' : '', onCheckUpdate)}
           {renderRow('作者', 'XG.GM', () =>
             Linking.openURL('https://github.com/XG2020').catch(() => {}),
@@ -540,6 +641,7 @@ export default function SettingsScreen({navigation}: any) {
               </View>
             ) : (
               <FlatList
+                showsVerticalScrollIndicator={false}
                 data={browseDirs}
                 keyExtractor={d => d.path}
                 style={styles.sheetList}
@@ -576,6 +678,89 @@ export default function SettingsScreen({navigation}: any) {
               onPress={() => setDirModal(false)}>
               <Text style={styles.sheetCancelText}>取消</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 开发者密钥验证（连点版本号 5 次触发） */}
+      <Modal
+        visible={keyModal}
+        transparent
+        statusBarTranslucent
+        animationType="fade"
+        onRequestClose={() => setKeyModal(false)}>
+        <View style={styles.devMask}>
+          <View style={styles.devCard}>
+            <Text style={styles.devTitle}>开发者验证</Text>
+            <TextInput
+              style={styles.devInput}
+              value={keyInput}
+              onChangeText={setKeyInput}
+              placeholder="请输入开发者密钥"
+              placeholderTextColor={t.sub}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoFocus
+              onSubmitEditing={onSubmitKey}
+            />
+            <View style={styles.devBtnRow}>
+              <TouchableOpacity
+                style={styles.devBtn}
+                onPress={() => setKeyModal(false)}>
+                <Text style={styles.devBtnText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.devBtn, styles.devBtnPrimary]}
+                onPress={onSubmitKey}>
+                <Text style={[styles.devBtnText, styles.devBtnTextPrimary]}>
+                  确定
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 开发者模式：自定义 API 接口（内置接口地址不展示） */}
+      <Modal
+        visible={apiModal}
+        transparent
+        statusBarTranslucent
+        animationType="fade"
+        onRequestClose={() => setApiModal(false)}>
+        <View style={styles.devMask}>
+          <View style={styles.devCard}>
+            <Text style={styles.devTitle}>开发者模式 · API 接口</Text>
+            <Text style={styles.devHint}>留空并保存则恢复使用内置接口</Text>
+            <TextInput
+              style={styles.devInput}
+              value={apiInput}
+              onChangeText={setApiInput}
+              placeholder="https://your-api.example.com"
+              placeholderTextColor={t.sub}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+            <View style={styles.devBtnRow}>
+              <TouchableOpacity
+                style={styles.devBtn}
+                onPress={() => setApiModal(false)}>
+                <Text style={styles.devBtnText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.devBtn, styles.devBtnPrimary]}
+                onPress={onSaveApi}
+                disabled={apiSaving}>
+                {apiSaving ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={[styles.devBtnText, styles.devBtnTextPrimary]}>
+                    保存
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -632,6 +817,49 @@ const createStyles = (t: Theme) =>
       backgroundColor: 'rgba(0,0,0,0.55)',
       justifyContent: 'flex-end',
     },
+    // 开发者模式弹窗（居中卡片）
+    devMask: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.55)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 32,
+    },
+    devCard: {
+      alignSelf: 'stretch',
+      backgroundColor: t.card,
+      borderRadius: 16,
+      padding: 20,
+    },
+    devTitle: {
+      color: t.text,
+      fontSize: 16,
+      fontWeight: '700',
+      textAlign: 'center',
+    },
+    devHint: {color: t.sub, fontSize: 12, marginTop: 8, textAlign: 'center'},
+    devInput: {
+      marginTop: 14,
+      borderWidth: 1,
+      borderColor: t.border,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      color: t.text,
+      fontSize: 14,
+    },
+    devBtnRow: {flexDirection: 'row', gap: 12, marginTop: 16},
+    devBtn: {
+      flex: 1,
+      backgroundColor: t.sheetBtn,
+      borderRadius: 20,
+      paddingVertical: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    devBtnPrimary: {backgroundColor: t.primary},
+    devBtnText: {color: t.text, fontSize: 14},
+    devBtnTextPrimary: {color: '#fff', fontWeight: '700'},
     sheet: {
       backgroundColor: t.card,
       borderTopLeftRadius: 16,

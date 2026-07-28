@@ -101,6 +101,7 @@ export default function PlaylistScreen({navigation}: any) {
         <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
           data={songs}
           keyExtractor={(item, i) => item.mid ?? `${item.title}-${i}`}
           renderItem={({item, index}) => (

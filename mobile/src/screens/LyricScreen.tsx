@@ -395,6 +395,8 @@ export default function LyricView() {
     setTransMap({});
     setWordsMap({});
     setLoaded(false);
+    // 切歌重置定位记录：新歌词加载后的首次定位直接跳转（不做滚动动画）
+    lastIndex.current = -1;
     (async () => {
       // 本地歌曲优先读同名 .lrc（下载时保存），离线也能显示歌词
       if (isLocal) {
@@ -474,7 +476,8 @@ export default function LyricView() {
   );
   activeIndexRef.current = activeIndex;
 
-  // 自动滚动到当前行（用户手滑期间暂停）
+  // 自动滚动到当前行（用户手滑期间暂停）；
+  // 首次定位（进页/切歌，歌曲可能已播一半）立即跳转，之后逐行平滑滚动
   useEffect(() => {
     if (
       !userScrolling.current &&
@@ -482,11 +485,12 @@ export default function LyricView() {
       activeIndex !== lastIndex.current &&
       lines.length > 0
     ) {
+      const firstSync = lastIndex.current < 0;
       lastIndex.current = activeIndex;
       listRef.current?.scrollToIndex({
         index: activeIndex,
         viewPosition: 0.4,
-        animated: true,
+        animated: !firstSync,
       });
     }
   }, [activeIndex, lines.length]);
@@ -515,7 +519,7 @@ export default function LyricView() {
     }).start();
   }, [timeOpacity]);
 
-  /** 用户滑动结束：3 秒无操作后恢复自动滚动并跳回当前播放行 */
+  /** 用户滑动结束：2 秒无操作后恢复自动滚动并跳回当前播放行 */
   const onUserScrollEnd = useCallback(() => {
     if (!userScrolling.current) {
       return; // 程序化滚动触发的 momentum 结束，忽略
@@ -541,7 +545,7 @@ export default function LyricView() {
           animated: true,
         });
       }
-    }, 3000);
+    }, 2000);
   }, [timeOpacity]);
 
   /** 长按复制该行歌词 */
@@ -559,6 +563,7 @@ export default function LyricView() {
       {lines.length > 0 ? (
         <FlatList
           ref={listRef}
+          showsVerticalScrollIndicator={false}
           data={lines}
           keyExtractor={(_, i) => String(i)}
           contentContainerStyle={styles.lyricList}
@@ -566,7 +571,23 @@ export default function LyricView() {
           maxToRenderPerBatch={16}
           windowSize={7}
           removeClippedSubviews
-          onScrollToIndexFailed={() => {}}
+          onScrollToIndexFailed={info => {
+            // 目标行超出已渲染范围（虚拟化）：先按估算行高直接跳到附近，
+            // 待该区域渲染完成后再精确对齐当前行
+            listRef.current?.scrollToOffset({
+              offset: info.averageItemLength * info.index,
+              animated: false,
+            });
+            setTimeout(() => {
+              if (!userScrolling.current && activeIndexRef.current >= 0) {
+                listRef.current?.scrollToIndex({
+                  index: activeIndexRef.current,
+                  viewPosition: 0.4,
+                  animated: false,
+                });
+              }
+            }, 120);
+          }}
           onScrollBeginDrag={onUserScrollStart}
           onScrollEndDrag={onUserScrollEnd}
           onMomentumScrollEnd={onUserScrollEnd}

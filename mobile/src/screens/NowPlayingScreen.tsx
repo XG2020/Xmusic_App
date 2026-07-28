@@ -96,6 +96,7 @@ export default function NowPlayingScreen({navigation}: any) {
       </View>
 
       <FlatList
+        showsVerticalScrollIndicator={false}
         data={queue}
         keyExtractor={(item, i) => `${item.id ?? item.title}-${i}`}
         initialScrollIndex={activeIdx > 6 && queue.length > 10 ? activeIdx - 3 : 0}

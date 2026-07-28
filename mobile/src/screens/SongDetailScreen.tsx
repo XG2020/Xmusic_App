@@ -113,7 +113,9 @@ export default function SongDetailView() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.body}>
         {/* 封面（右侧露黑胶碟边）+ 歌名歌手横排 */}
         <View style={styles.hero}>
           <View style={styles.coverWrap}>

@@ -274,6 +274,66 @@ export async function setShowRankTab(on: boolean) {
   await AsyncStorage.setItem(SHOW_RANK_TAB_KEY, on ? '1' : '0');
 }
 
+// ===== 播放页封面旋转开关 =====
+
+const COVER_SPIN_KEY = 'cover_spin';
+
+/** 内存缓存 + 订阅：播放页可能常驻导航栈，设置页切换后需立即生效，默认开启 */
+let coverSpinCache = true;
+const coverSpinListeners = new Set<(on: boolean) => void>();
+AsyncStorage.getItem(COVER_SPIN_KEY)
+  .then(raw => {
+    coverSpinCache = raw !== '0';
+    coverSpinListeners.forEach(l => l(coverSpinCache));
+  })
+  .catch(() => {});
+
+/** 同步读取（播放页初始渲染判断） */
+export function coverSpinEnabled(): boolean {
+  return coverSpinCache;
+}
+
+/** 订阅开关变化，返回取消函数 */
+export function subscribeCoverSpin(fn: (on: boolean) => void): () => void {
+  coverSpinListeners.add(fn);
+  return () => {
+    coverSpinListeners.delete(fn);
+  };
+}
+
+export async function getCoverSpin(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(COVER_SPIN_KEY);
+    coverSpinCache = raw !== '0';
+  } catch (e) {
+    // 读取失败沿用缓存值
+  }
+  return coverSpinCache;
+}
+
+export async function setCoverSpin(on: boolean) {
+  coverSpinCache = on;
+  coverSpinListeners.forEach(l => l(on));
+  await AsyncStorage.setItem(COVER_SPIN_KEY, on ? '1' : '0');
+}
+
+// ===== 开发者模式 =====
+
+const DEV_UNLOCKED_KEY = 'dev_unlocked';
+
+/** 是否已通过密钥解锁开发者模式（解锁后连点版本号直接进接口设置） */
+export async function getDevUnlocked(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(DEV_UNLOCKED_KEY)) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function setDevUnlocked(on: boolean) {
+  await AsyncStorage.setItem(DEV_UNLOCKED_KEY, on ? '1' : '0');
+}
+
 // ===== 搜索历史记录 =====
 
 const SEARCH_HISTORY_KEY = 'search_history';

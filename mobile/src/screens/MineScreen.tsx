@@ -358,6 +358,7 @@ export default function MineScreen({navigation, route}: any) {
             </View>
           </View>
           <FlatList
+            showsVerticalScrollIndicator={false}
             data={plData}
             keyExtractor={item => item.id}
             renderItem={({item}) => {
@@ -411,6 +412,7 @@ export default function MineScreen({navigation, route}: any) {
         </>
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
           data={recents}
           keyExtractor={(item, i) =>
             item.mid ?? item.localPath ?? `${item.title}-${i}`

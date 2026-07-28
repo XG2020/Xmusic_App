@@ -1,13 +1,58 @@
 import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {BASE_URL, DEFAULT_QUALITY} from '../constants/config';
 import {getPlayQuality} from './settings';
-import {cachedGet, cachePeekMany, cachePutMany, dropCache} from './cache';
+import {
+  cachedGet,
+  cachePeekMany,
+  cachePutMany,
+  dropCache,
+  clearApiCache,
+} from './cache';
 import type {Playlist, Song} from '../types/music';
 
 const api = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
 });
+
+// ===== 开发者模式：自定义 API 接口 =====
+
+const CUSTOM_API_KEY = 'custom_api_url';
+
+// 启动时应用已保存的自定义接口（有则覆盖内置地址），此后所有请求走该接口
+AsyncStorage.getItem(CUSTOM_API_KEY)
+  .then(url => {
+    if (url) {
+      api.defaults.baseURL = url;
+    }
+  })
+  .catch(() => {});
+
+/** 当前自定义接口地址（空串表示使用内置接口，内置地址不对外暴露） */
+export async function getCustomApiUrl(): Promise<string> {
+  try {
+    return (await AsyncStorage.getItem(CUSTOM_API_KEY)) ?? '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * 保存自定义接口（开发者模式）；传空恢复内置接口。
+ * 立即生效并清空接口缓存，避免新旧接口数据混用。
+ */
+export async function setCustomApiUrl(url: string) {
+  const clean = url.trim().replace(/\/+$/, '');
+  if (clean) {
+    await AsyncStorage.setItem(CUSTOM_API_KEY, clean);
+    api.defaults.baseURL = clean;
+  } else {
+    await AsyncStorage.removeItem(CUSTOM_API_KEY);
+    api.defaults.baseURL = BASE_URL;
+  }
+  await clearApiCache().catch(() => {});
+}
 
 // 缓存时长（直链有时效，短 TTL 缓存 + 播放失败强制重解析兜底）
 const MIN = 60_000;
@@ -214,19 +259,22 @@ export type RankInfo = {
   top3?: {title: string; singerName: string}[];
 };
 
+/** 不展示的榜单（按标题屏蔽，如海外方接口下架/内容质量差的榜单） */
+const HIDDEN_RANK_TITLES = new Set(['Global-K Chart']);
+
 /** 榜单列表（/api/top 不带 id，返回分组的所有榜单）；force 丢弃缓存强制重拉 */
 export async function getTopGroups(force?: boolean): Promise<RankInfo[]> {
   if (force) {
     dropCache('topGroups');
   }
-  return cachedGet('topGroups', TTL_TOP, async () => {
+  const ranks = await cachedGet('topGroups', TTL_TOP, async () => {
     const {data} = await api.get('/api/top');
     const groups: any[] = data?.data?.group ?? [];
-    const ranks: RankInfo[] = [];
+    const list: RankInfo[] = [];
     for (const g of groups) {
       for (const t of g?.toplist ?? []) {
         const song0 = t?.song?.[0];
-        ranks.push({
+        list.push({
           topId: t.topId,
           title: t.title,
           period: t.period,
@@ -239,8 +287,10 @@ export async function getTopGroups(force?: boolean): Promise<RankInfo[]> {
         });
       }
     }
-    return ranks;
+    return list;
   });
+  // 屏蔽过滤放在缓存之外：命中旧缓存的数据同样生效
+  return ranks.filter(r => !HIDDEN_RANK_TITLES.has(r.title));
 }
 
 /** 指定榜单歌曲（返回结构为 data.data.song，字段是 songId/singerName/cover） */
