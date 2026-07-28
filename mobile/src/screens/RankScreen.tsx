@@ -11,6 +11,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  Dimensions,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -176,25 +177,30 @@ export default function RankScreen({navigation, route, lockPager}: any) {
           点击右侧箭头展开为换行网格，选中榜单后自动收起 */}
       <View style={styles.chipsRow}>
         {chipsExpanded ? (
-          <View style={styles.chipsWrap}>
-            {ranks.map(r => (
-              <TouchableOpacity
-                key={r.topId}
-                style={[styles.chip, rankId === r.topId && styles.chipActive]}
-                onPress={() => {
-                  setRankId(r.topId);
-                  toggleChips(false);
-                }}>
-                <Text
-                  style={[
-                    styles.chipText,
-                    rankId === r.topId && styles.chipTextActive,
-                  ]}>
-                  {r.title}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          <ScrollView
+            style={styles.chipsExpandScroll}
+            showsVerticalScrollIndicator={false}
+            nestedScrollEnabled>
+            <View style={styles.chipsWrap}>
+              {ranks.map(r => (
+                <TouchableOpacity
+                  key={r.topId}
+                  style={[styles.chip, rankId === r.topId && styles.chipActive]}
+                  onPress={() => {
+                    setRankId(r.topId);
+                    toggleChips(false);
+                  }}>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      rankId === r.topId && styles.chipTextActive,
+                    ]}>
+                    {r.title}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
         ) : (
           <ScrollView
             horizontal
@@ -320,9 +326,13 @@ const createStyles = (t: Theme) =>
     chipsRow: {flexDirection: 'row', alignItems: 'flex-start'},
     chipsScroll: {flex: 1},
     chips: {flexDirection: 'row', gap: 10, padding: 12},
+    // 展开态：榜单多时限高可竖滑，避免把下方歌曲列表挤出屏幕
+    chipsExpandScroll: {
+      flex: 1,
+      maxHeight: Dimensions.get('window').height * 0.4,
+    },
     // 展开态：换行网格（与收起态同样的边距与间隔）
     chipsWrap: {
-      flex: 1,
       flexDirection: 'row',
       flexWrap: 'wrap',
       gap: 10,
