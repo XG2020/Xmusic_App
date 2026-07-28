@@ -190,6 +190,10 @@ export default function SearchScreen({navigation}: any) {
         <FlatList
           data={results}
           keyExtractor={(item, i) => `${item.mid ?? item.title}-${i}`}
+          initialNumToRender={12}
+          maxToRenderPerBatch={16}
+          windowSize={9}
+          removeClippedSubviews
           onEndReached={loadMore}
           onEndReachedThreshold={0.3}
           ListFooterComponent={
@@ -202,7 +206,11 @@ export default function SearchScreen({navigation}: any) {
           renderItem={({item, index}) => (
             <TouchableOpacity style={styles.item} onPress={() => playAt(index)}>
               {item.coverUrl ? (
-                <Image source={{uri: item.coverUrl}} style={styles.cover} />
+                <Image
+                  source={{uri: item.coverUrl}}
+                  style={styles.cover}
+                  resizeMethod="resize"
+                />
               ) : (
                 <View style={[styles.cover, styles.coverFallback]}>
                   <Text style={styles.coverFallbackText}>♪</Text>

@@ -107,6 +107,8 @@ export function songToTrack(s: Song): Track {
     duration: s.interval,
     // 自定义字段，供歌词等页面使用
     mid: s.mid,
+    // 自定义字段：播放页下载时凭专辑信息拼封面直链（artwork 缺失/本地路径时兜底）
+    album: s.album,
   } as Track;
 }
 

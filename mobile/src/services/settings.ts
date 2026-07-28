@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {NativeModules} from 'react-native';
 
 /** 音质可选值（与 api.md /api/song/url 的 quality 参数一致，不可用时服务端自动降级） */
 export type Quality = 'master' | 'atmos_2' | 'atmos_51' | 'flac' | '320' | '128';
@@ -94,16 +95,26 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 
 const THEME_MODE_KEY = 'theme_mode';
 
+// 把主题模式同步给原生（写 SharedPreferences）：下次冷启动的启动窗口
+// 按应用内主题解析明暗资源，而不是只认系统深浅色
+function syncNativeThemeMode(mode: ThemeMode) {
+  NativeModules.LocalMusic?.setThemeMode?.(mode);
+}
+
 export async function getThemeMode(): Promise<ThemeMode> {
   try {
     const raw = await AsyncStorage.getItem(THEME_MODE_KEY);
-    return raw === 'light' || raw === 'dark' ? raw : 'system';
+    const mode = raw === 'light' || raw === 'dark' ? raw : 'system';
+    // 启动时校准原生侧标志，修复清数据/异常导致的两侧不一致
+    syncNativeThemeMode(mode);
+    return mode;
   } catch (e) {
     return 'system';
   }
 }
 
 export async function setThemeMode(mode: ThemeMode) {
+  syncNativeThemeMode(mode);
   await AsyncStorage.setItem(THEME_MODE_KEY, mode);
 }
 

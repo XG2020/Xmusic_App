@@ -591,6 +591,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
       <Modal
         visible={plPicker}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setPlPicker(false)}>
         <TouchableOpacity

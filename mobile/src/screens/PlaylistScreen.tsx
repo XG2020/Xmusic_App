@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import {getPlaylist, getPreferredSongUrls, parsePlaylistId} from '../services/api';
+import {getPlaylist, getPreferredSongUrls, resolvePlaylistId} from '../services/api';
 import type {Song} from '../types/music';
 import {playSongs} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
@@ -29,15 +29,17 @@ export default function PlaylistScreen({navigation}: any) {
   const [actionSong, setActionSong] = useState<Song | null>(null);
 
   const load = async () => {
-    const id = parsePlaylistId(playlistId);
-    if (!id) {
-      if (playlistId.trim()) {
-        AppAlert.alert('无法识别', '请输入歌单 ID 或粘贴 QQ 音乐分享链接');
-      }
+    if (!playlistId.trim()) {
       return;
     }
+    // 分享短链需请求跟随重定向才能拿到歌单 ID，解析期间也显示加载态
     setLoading(true);
     try {
+      const id = await resolvePlaylistId(playlistId);
+      if (!id) {
+        AppAlert.alert('无法识别', '请输入歌单 ID 或粘贴 QQ 音乐分享链接');
+        return;
+      }
       const data = await getPlaylist(id);
       const list = data?.songs ?? [];
       const mids = list.map(s => s.mid!).filter(Boolean);

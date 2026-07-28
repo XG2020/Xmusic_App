@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
@@ -25,18 +26,25 @@ import SettingsScreen from './screens/SettingsScreen';
 import SleepTimerScreen from './screens/SleepTimerScreen';
 import DownloadScreen from './screens/DownloadScreen';
 import NowPlayingScreen from './screens/NowPlayingScreen';
+import PersonalizeScreen from './screens/PersonalizeScreen';
 import MiniPlayer from './components/MiniPlayer';
 import Icon, {IconName} from './components/Icon';
 import {showRankTabEnabled, subscribeShowRankTab} from './services/settings';
+import {useSkin, SkinSlot} from './services/skin';
 import {useTheme} from './theme';
 
 const Stack = createNativeStackNavigator();
 
-// 底栏三个主页面（logo 素材图标，选中/未选中两套造型）
-const TABS: {label: string; icon: IconName; iconSel: IconName}[] = [
-  {label: '首页', icon: 'tabHome', iconSel: 'tabHomeSel'},
-  {label: '排行', icon: 'tabRank', iconSel: 'tabRank'},
-  {label: '我的', icon: 'tabMine', iconSel: 'tabMineSel'},
+// 底栏三个主页面（logo 素材图标，选中/未选中两套造型；slot 为皮肤自定义槽位）
+const TABS: {
+  label: string;
+  icon: IconName;
+  iconSel: IconName;
+  slot: SkinSlot;
+}[] = [
+  {label: '首页', icon: 'tabHome', iconSel: 'tabHomeSel', slot: 'tabHome'},
+  {label: '排行', icon: 'tabRank', iconSel: 'tabRank', slot: 'tabRank'},
+  {label: '我的', icon: 'tabMine', iconSel: 'tabMineSel', slot: 'tabMine'},
 ];
 
 // 需要在底部显示全局迷你播放条的 Stack 页面
@@ -50,6 +58,7 @@ const MINI_BAR_ROUTES = new Set([
   'SleepTimer',
   'Download',
   'Rank',
+  'Personalize',
 ]);
 
 /**
@@ -62,6 +71,8 @@ function MainTabs({navigation, route}: any) {
   const {width} = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [page, setPage] = useState(0);
+  // 皮肤：自定义背景图与底栏图标
+  const skin = useSkin();
   // 底栏排行榜入口开关（设置页切换后实时生效）
   const [showRank, setShowRank] = useState(showRankTabEnabled());
   useEffect(() => subscribeShowRankTab(setShowRank), []);
@@ -75,7 +86,9 @@ function MainTabs({navigation, route}: any) {
   const mineIndex = showRank ? 2 : 1;
 
   const go = (i: number) => {
-    pagerRef.current?.scrollTo({x: i * width, animated: true});
+    // 点击切页直接定位不做滚动动画：程序滚动是固定时长补间不跟手，
+    // 跨页时拖沓感明显；左右滑动手势仍保留跟手翻页
+    pagerRef.current?.scrollTo({x: i * width, animated: false});
     setPage(i);
   };
 
@@ -97,6 +110,21 @@ function MainTabs({navigation, route}: any) {
 
   return (
     <View style={[styles.mainWrap, {backgroundColor: t.bg}]}>
+      {/* 自定义背景图：铺满主页容器，三个主页容器背景随之透明 */}
+      {!!skin.bg && (
+        <>
+          <Image
+            source={{uri: skin.bg}}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+            resizeMethod="resize"
+          />
+          {/* 主题色半透明遮罩：压暗/压亮背景图，保证文字、列表等内容可读 */}
+          <View
+            style={[StyleSheet.absoluteFill, {backgroundColor: t.bg + 'A6'}]}
+          />
+        </>
+      )}
       <ScrollView
         ref={pagerRef}
         horizontal
@@ -135,17 +163,31 @@ function MainTabs({navigation, route}: any) {
           const i = tabs.indexOf(tab);
           const active = page === i;
           const color = active ? t.primary : t.sub;
+          const customIcon = skin[tab.slot];
           return (
             <TouchableOpacity
               key={tab.label}
               style={styles.tabItem}
               activeOpacity={0.8}
               onPress={() => go(i)}>
-              <Icon
-                name={active ? tab.iconSel : tab.icon}
-                size={23}
-                color={color}
-              />
+              {/* 固定高度图标区：自定义图(30)与内置图(23)混搭时文字基线也对齐 */}
+              <View style={styles.tabIconBox}>
+                {customIcon ? (
+                  // 自定义图标保持原色不着色，未选中时降低透明度区分状态
+                  <Image
+                    source={{uri: customIcon}}
+                    style={[styles.tabCustomIcon, !active && styles.tabCustomDim]}
+                    resizeMode="cover"
+                    resizeMethod="resize"
+                  />
+                ) : (
+                  <Icon
+                    name={active ? tab.iconSel : tab.icon}
+                    size={23}
+                    color={color}
+                  />
+                )}
+              </View>
               <Text style={[styles.tabLabel, {color}]}>{tab.label}</Text>
             </TouchableOpacity>
           );
@@ -184,6 +226,7 @@ export default function AppNavigator() {
         <Stack.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
         <Stack.Screen name="Local" component={LocalScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen name="Personalize" component={PersonalizeScreen} />
         <Stack.Screen name="SleepTimer" component={SleepTimerScreen} />
         <Stack.Screen name="Download" component={DownloadScreen} />
         <Stack.Screen
@@ -211,5 +254,10 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   tabItem: {flex: 1, alignItems: 'center', gap: 2},
+  // 图标区固定高度取自定义图尺寸，内置图居中，三个位混搭不错位
+  tabIconBox: {height: 30, justifyContent: 'center', alignItems: 'center'},
   tabLabel: {fontSize: 11, fontWeight: '600'},
+  // 自定义底栏图标：比内置 Icon 大一号更醒目（图片图标视觉上比线条图形显小），圆角裁剪自动缩放
+  tabCustomIcon: {width: 30, height: 30, borderRadius: 7},
+  tabCustomDim: {opacity: 0.55},
 });

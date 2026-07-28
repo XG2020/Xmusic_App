@@ -562,6 +562,10 @@ export default function LyricView() {
           data={lines}
           keyExtractor={(_, i) => String(i)}
           contentContainerStyle={styles.lyricList}
+          initialNumToRender={16}
+          maxToRenderPerBatch={16}
+          windowSize={7}
+          removeClippedSubviews
           onScrollToIndexFailed={() => {}}
           onScrollBeginDrag={onUserScrollStart}
           onScrollEndDrag={onUserScrollEnd}
@@ -627,7 +631,8 @@ const createStyles = (t: Theme) =>
       marginTop: 4,
       paddingRight: 28,
     },
-    transActive: {color: 'rgba(255,255,255,0.75)'},
+    // 高亮行译文：主题文字色 75% 透明度，明暗模式都清晰可读
+    transActive: {color: t.playerText + 'BF'},
     // 聚焦行右侧时间气泡（仅手滑时渐显）
     timeBubble: {
       position: 'absolute',
@@ -639,7 +644,8 @@ const createStyles = (t: Theme) =>
     timeBubbleText: {
       fontSize: 10,
       color: t.playerText,
-      backgroundColor: 'rgba(255,255,255,0.14)',
+      // 主题文字色低透明度做浮层底，明暗模式都有轻微衬托
+      backgroundColor: t.playerText + '24',
       paddingHorizontal: 6,
       paddingVertical: 3,
       borderRadius: 6,

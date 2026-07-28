@@ -160,7 +160,9 @@ export async function startDownload(
       if (wantCover && !coverUrl && song.mid) {
         try {
           const detail = await getSongDetail({mid: song.mid});
-          coverUrl = albumCoverUrl(detail?.album);
+          // 详情接口外层包着 track_info（与 resolveSongById 一致），
+          // 直接读 detail.album 永远取不到专辑导致封面兜底失效
+          coverUrl = albumCoverUrl((detail?.track_info ?? detail)?.album);
         } catch (e) {
           // 详情接口失败放弃封面
         }

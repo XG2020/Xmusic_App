@@ -74,7 +74,8 @@ export const LIGHT_THEME: Theme = {
   playerBg: '#EEF2F7',
   playerText: '#1F2A38',
   playerSub: 'rgba(31,42,56,0.6)',
-  playerFaint: 'rgba(31,42,56,0.42)',
+  // 浅色底吃对比度，未激活歌词行要比深色模式（0.42）更实一些才可读
+  playerFaint: 'rgba(31,42,56,0.55)',
   discBg: '#DCE4EE',
   discBorder: 'rgba(0,0,0,0.08)',
   sheetBtn: 'rgba(0,0,0,0.05)',

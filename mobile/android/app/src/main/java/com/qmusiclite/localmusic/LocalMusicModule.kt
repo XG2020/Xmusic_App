@@ -17,6 +17,42 @@ import java.io.File
 class LocalMusicModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
   override fun getName(): String = "LocalMusic"
 
+  // JS 首帧可同步读到的常量：是否设置了自定义启动图（决定 Splash 首帧显示纯色还是内置图）
+  override fun getConstants(): Map<String, Any> = mapOf(
+    "hasCustomSplash" to reactContext
+      .getSharedPreferences("splash_prefs", android.content.Context.MODE_PRIVATE)
+      .getBoolean("custom_splash", false)
+  )
+
+  /**
+   * 记录"已设置自定义启动图"标志到 SharedPreferences，
+   * MainActivity 冷启动时据此把启动窗口换成纯色底（不显示默认 logo 图）
+   */
+  @ReactMethod
+  fun setCustomSplashFlag(enabled: Boolean) {
+    reactContext
+      .getSharedPreferences("splash_prefs", android.content.Context.MODE_PRIVATE)
+      .edit().putBoolean("custom_splash", enabled).apply()
+  }
+
+  /**
+   * 同步应用内主题模式（system/dark/light）到 SharedPreferences 并立即应用：
+   * 下次冷启动 MainApplication 据此强制 DayNight，启动窗口跟随应用内主题
+   * 而不是系统深浅色；运行时立即生效让状态栏等原生资源同步切换
+   */
+  @ReactMethod
+  fun setThemeMode(mode: String) {
+    reactContext
+      .getSharedPreferences("splash_prefs", android.content.Context.MODE_PRIVATE)
+      .edit().putString("theme_mode", mode).apply()
+    // setDefaultNightMode 必须在主线程调用
+    com.facebook.react.bridge.UiThreadUtil.runOnUiThread {
+      androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+        com.qmusiclite.MainApplication.nightModeOf(mode)
+      )
+    }
+  }
+
   @ReactMethod
   fun getAudioFiles(promise: com.facebook.react.bridge.Promise) {
     try {

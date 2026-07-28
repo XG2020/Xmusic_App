@@ -284,6 +284,7 @@ export default function LocalScreen({navigation}: any) {
       <Modal
         visible={folderModal}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={closeFolderModal}>
         <View style={styles.sheetMask}>

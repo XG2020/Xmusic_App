@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   ScrollView,
   Dimensions,
   LayoutChangeEvent,
+  GestureResponderEvent,
   PanResponder,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
@@ -35,6 +36,7 @@ import {
   skipToPrevious,
 } from '../services/player';
 import {isFav, toggleFav} from '../services/store';
+import {useSkin} from '../services/skin';
 import Icon, {IconName} from '../components/Icon';
 import SongDetailView from './SongDetailScreen';
 import LyricView from './LyricScreen';
@@ -64,21 +66,105 @@ const rateIconName = (r: number): IconName => {
   return `speed${String(Math.round(match * 10)).padStart(2, '0')}` as IconName;
 };
 
-export default function PlayerScreen({navigation}: any) {
-  const {t} = useTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  const playback = usePlaybackState();
+// 详情页/歌词页内容与父级状态无关（各自订阅所需数据），
+// memo 隔离父级重渲（收藏、翻页、弹层开关等），降低播放页常驻开销
+const DetailPage = React.memo(SongDetailView);
+const LyricPage = React.memo(LyricView);
+
+/**
+ * 进度条区（时间 + 可拖动进度条）。
+ * 单独订阅 useProgress，避免每 500ms 的进度刷新带动整个播放页重渲。
+ */
+const ProgressSection = React.memo(function ProgressSection({
+  styles,
+  lockPager,
+}: {
+  styles: ReturnType<typeof createStyles>;
+  lockPager: (locked: boolean) => void;
+}) {
   const progress = useProgress(500);
-  const track = useActiveTrack();
-  // 播放模式取全局持久化状态，切换播放列表/重进播放页不重置
-  const [mode, setMode] = useState<PlayMode>(getPlayMode());
-  const [fav, setFav] = useState(false);
   // 进度条拖动：拖动中的临时比例（null = 未拖动，显示真实进度）
   const [dragPct, setDragPct] = useState<number | null>(null);
   const barWidthRef = useRef(0);
   const dragStartX = useRef(0);
   const durationRef = useRef(0);
   durationRef.current = progress.duration;
+
+  const clampRatio = (x: number) =>
+    Math.min(Math.max(barWidthRef.current ? x / barWidthRef.current : 0, 0), 1);
+
+  // 进度条支持点击 + 拖动定位（拖动中圆点跟随手指，松手才 seek）
+  const barResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      // 不让父级横向 pager 抢走手势
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: e => {
+        lockPager(true);
+        dragStartX.current = e.nativeEvent.locationX;
+        setDragPct(clampRatio(e.nativeEvent.locationX));
+      },
+      onPanResponderMove: (_e, g) => {
+        setDragPct(clampRatio(dragStartX.current + g.dx));
+      },
+      onPanResponderRelease: (_e, g) => {
+        lockPager(false);
+        const ratio = clampRatio(dragStartX.current + g.dx);
+        if (durationRef.current) {
+          seekTo(ratio * durationRef.current);
+        }
+        // 稍延迟恢复真实进度，避免 seek 生效前圆点瞬间跳回
+        setTimeout(() => setDragPct(null), 400);
+      },
+      onPanResponderTerminate: () => {
+        lockPager(false);
+        setDragPct(null);
+      },
+    }),
+  ).current;
+
+  const livePct = progress.duration
+    ? (progress.position / progress.duration) * 100
+    : 0;
+  // 拖动中优先显示手指位置
+  const pct = dragPct !== null ? dragPct * 100 : livePct;
+
+  return (
+    <View style={styles.progress}>
+      <Text style={styles.time}>
+        {formatDuration(
+          dragPct !== null && progress.duration
+            ? dragPct * progress.duration
+            : progress.position,
+        )}
+      </Text>
+      <View
+        style={styles.barTouch}
+        onLayout={(e: LayoutChangeEvent) => {
+          barWidthRef.current = e.nativeEvent.layout.width;
+        }}
+        {...barResponder.panHandlers}>
+        <View style={styles.bar}>
+          <View style={[styles.barFill, {width: `${pct}%`}]} />
+          <View style={[styles.barDot, {left: `${pct}%`}]} />
+        </View>
+      </View>
+      <Text style={styles.time}>{formatDuration(progress.duration)}</Text>
+    </View>
+  );
+});
+
+export default function PlayerScreen({navigation}: any) {
+  const {t} = useTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
+  // 皮肤：有自定义播放页背景图时铺满整屏，容器随之透明
+  const skin = useSkin();
+  const playback = usePlaybackState();
+  const track = useActiveTrack();
+  // 播放模式取全局持久化状态，切换播放列表/重进播放页不重置
+  const [mode, setMode] = useState<PlayMode>(getPlayMode());
+  const [fav, setFav] = useState(false);
   // 睡眠定时器
   const sleepRemain = useSleepTimer();
   // 音质设置（播放音质已移至设置页，这里仅保留下载音质选择弹层）
@@ -131,9 +217,41 @@ export default function PlayerScreen({navigation}: any) {
     }
   };
 
-  /** 拖动进度条期间锁定左右翻页，避免手势冲突 */
-  const lockPager = (locked: boolean) => {
+  /** 拖动进度条期间锁定左右翻页，避免手势冲突（引用稳定，供 memo 子组件使用） */
+  const lockPager = useCallback((locked: boolean) => {
     pagerRef.current?.setNativeProps({scrollEnabled: !locked});
+  }, []);
+
+  // 方向哨兵：原生横向 ScrollView 只要水平位移超过 touch slop（约 8dp）
+  // 就开始翻页，完全不比较垂直分量，拇指斜着下滑很容易误触发翻页。
+  // 在手势最初几 dp 先判定方向，非明确横滑立即锁定翻页
+  // （setNativeProps 直达原生，能赶在原生 slop 判定之前生效），
+  // 手势结束恢复；明确横滑则不干预，翻页手感不变
+  const gateStart = useRef({x: 0, y: 0});
+  const gateDecided = useRef(false);
+  const onGateTouchStart = (e: GestureResponderEvent) => {
+    gateStart.current = {x: e.nativeEvent.pageX, y: e.nativeEvent.pageY};
+    gateDecided.current = false;
+  };
+  const onGateTouchMove = (e: GestureResponderEvent) => {
+    if (gateDecided.current) {
+      return;
+    }
+    const dx = e.nativeEvent.pageX - gateStart.current.x;
+    const dy = e.nativeEvent.pageY - gateStart.current.y;
+    // 位移太小方向不可信，继续观察
+    if (Math.abs(dx) < 6 && Math.abs(dy) < 6) {
+      return;
+    }
+    gateDecided.current = true;
+    // 水平分量没有明显大于垂直分量（斜滑/竖滑）→ 禁止翻页
+    if (Math.abs(dx) <= Math.abs(dy) * 1.2) {
+      lockPager(true);
+    }
+  };
+  const onGateTouchEnd = () => {
+    gateDecided.current = false;
+    lockPager(false);
   };
 
   // 下滑收起：顶栏与歌曲页支持下拉跟手位移，超过阈值或快速下甩后收起
@@ -170,40 +288,6 @@ export default function PlayerScreen({navigation}: any) {
     }),
   ).current;
 
-  const clampRatio = (x: number) =>
-    Math.min(Math.max(barWidthRef.current ? x / barWidthRef.current : 0, 0), 1);
-
-  // 进度条支持点击 + 拖动定位（拖动中圆点跟随手指，松手才 seek）
-  const barResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      // 不让父级横向 pager 抢走手势
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: e => {
-        lockPager(true);
-        dragStartX.current = e.nativeEvent.locationX;
-        setDragPct(clampRatio(e.nativeEvent.locationX));
-      },
-      onPanResponderMove: (_e, g) => {
-        setDragPct(clampRatio(dragStartX.current + g.dx));
-      },
-      onPanResponderRelease: (_e, g) => {
-        lockPager(false);
-        const ratio = clampRatio(dragStartX.current + g.dx);
-        if (durationRef.current) {
-          seekTo(ratio * durationRef.current);
-        }
-        // 稍延迟恢复真实进度，避免 seek 生效前圆点瞬间跳回
-        setTimeout(() => setDragPct(null), 400);
-      },
-      onPanResponderTerminate: () => {
-        lockPager(false);
-        setDragPct(null);
-      },
-    }),
-  ).current;
-
   const cycleMode = async () => {
     const next: PlayMode =
       mode === 'list' ? 'single' : mode === 'single' ? 'shuffle' : 'list';
@@ -220,12 +304,15 @@ export default function PlayerScreen({navigation}: any) {
     } catch (e) {}
   };
 
-  /** 快进/快退指定秒数 */
-  const seekBy = (delta: number) => {
-    if (!progress.duration) {
-      return;
-    }
-    seekTo(Math.min(Math.max(progress.position + delta, 0), progress.duration));
+  /** 快进/快退指定秒数（按需取一次进度，父组件不常驻订阅 useProgress） */
+  const seekBy = async (delta: number) => {
+    try {
+      const {position, duration} = await TrackPlayer.getProgress();
+      if (!duration) {
+        return;
+      }
+      seekTo(Math.min(Math.max(position + delta, 0), duration));
+    } catch (e) {}
   };
 
   /** 下载入口：先选音质 */
@@ -268,14 +355,29 @@ export default function PlayerScreen({navigation}: any) {
     setFav(now);
   };
 
-  const livePct = progress.duration
-    ? (progress.position / progress.duration) * 100
-    : 0;
-  // 拖动中优先显示手指位置
-  const pct = dragPct !== null ? dragPct * 100 : livePct;
-
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <View style={styles.bgWrap}>
+      {/* 自定义播放页背景图：铺满整屏（含状态栏底下），未设置时用主题底色 */}
+      {!!skin.playerBg && (
+        <>
+          <Image
+            source={{uri: skin.playerBg}}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+            resizeMethod="resize"
+          />
+          {/* 主题色半透明遮罩：压暗/压亮背景图，保证歌词、标题等内容可读 */}
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              {backgroundColor: t.playerBg + 'A6'},
+            ]}
+          />
+        </>
+      )}
+      <SafeAreaView
+        style={[styles.container, !!skin.playerBg && styles.transparentBg]}
+        edges={['top', 'bottom']}>
       {/* 下滑收起：整屏内容跟手下移 */}
       <Animated.View
         style={[styles.dragWrap, {transform: [{translateY: dragY}]}]}>
@@ -309,12 +411,16 @@ export default function PlayerScreen({navigation}: any) {
           showsHorizontalScrollIndicator={false}
           contentOffset={{x: SCREEN_W, y: 0}}
           onLayout={onPagerLayout}
+          onTouchStart={onGateTouchStart}
+          onTouchMove={onGateTouchMove}
+          onTouchEnd={onGateTouchEnd}
+          onTouchCancel={onGateTouchEnd}
           onMomentumScrollEnd={e =>
             setPage(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))
           }>
           {/* 页 1：歌曲详情 */}
           <View style={styles.page}>
-            <SongDetailView />
+            <DetailPage />
           </View>
 
           {/* 页 2：歌曲（播放主页），支持下滑收起 */}
@@ -385,30 +491,8 @@ export default function PlayerScreen({navigation}: any) {
               </TouchableOpacity>
             </View>
 
-            {/* 进度条（可点击/拖动定位） */}
-            <View style={styles.progress}>
-              <Text style={styles.time}>
-                {formatDuration(
-                  dragPct !== null && progress.duration
-                    ? dragPct * progress.duration
-                    : progress.position,
-                )}
-              </Text>
-              <View
-                style={styles.barTouch}
-                onLayout={(e: LayoutChangeEvent) => {
-                  barWidthRef.current = e.nativeEvent.layout.width;
-                }}
-                {...barResponder.panHandlers}>
-                <View style={styles.bar}>
-                  <View style={[styles.barFill, {width: `${pct}%`}]} />
-                  <View style={[styles.barDot, {left: `${pct}%`}]} />
-                </View>
-              </View>
-              <Text style={styles.time}>
-                {formatDuration(progress.duration)}
-              </Text>
-            </View>
+            {/* 进度条（可点击/拖动定位），独立订阅进度避免整页高频重渲 */}
+            <ProgressSection styles={styles} lockPager={lockPager} />
 
             {/* 播放控制 */}
             <View style={styles.controls}>
@@ -446,7 +530,7 @@ export default function PlayerScreen({navigation}: any) {
 
           {/* 页 3：歌词 */}
           <View style={styles.page}>
-            <LyricView />
+            <LyricPage />
           </View>
         </ScrollView>
       </Animated.View>
@@ -455,6 +539,7 @@ export default function PlayerScreen({navigation}: any) {
       <Modal
         visible={dlSheet}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setDlSheet(false)}>
         <TouchableOpacity
@@ -489,6 +574,7 @@ export default function PlayerScreen({navigation}: any) {
       <Modal
         visible={speedSheet}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setSpeedSheet(false)}>
         <TouchableOpacity
@@ -524,7 +610,8 @@ export default function PlayerScreen({navigation}: any) {
           </View>
         </TouchableOpacity>
       </Modal>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -533,6 +620,8 @@ function trackToSong(track: any): Song {
     mid: track.mid,
     title: track.title ?? '未知歌曲',
     singer: track.artist ? [{name: String(track.artist)}] : undefined,
+    // songToTrack 写入的自定义字段，下载时凭它拼封面直链
+    album: track.album,
     interval: track.duration,
     url: track.url ? String(track.url) : undefined,
     coverUrl: track.artwork ? String(track.artwork) : undefined,
@@ -541,7 +630,11 @@ function trackToSong(track: any): Song {
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
+    // 背景层：自定义背景图铺满整屏（延伸到状态栏底下），底色兜底
+    bgWrap: {flex: 1, backgroundColor: t.playerBg},
     container: {flex: 1, backgroundColor: t.playerBg},
+    // 有自定义背景图时透明，露出下层背景图
+    transparentBg: {backgroundColor: 'transparent'},
     dragWrap: {flex: 1},
     header: {
       flexDirection: 'row',

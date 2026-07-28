@@ -26,11 +26,12 @@ import {
   songKey,
   LocalPlaylist,
 } from '../services/store';
-import {getPlaylist, parsePlaylistId, resolveSongUrls} from '../services/api';
+import {getPlaylist, resolvePlaylistId, resolveSongUrls} from '../services/api';
 import {playSongs, playSongsProgressive} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
+import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 import type {Song} from '../types/music';
 
@@ -42,6 +43,8 @@ type InputKind = 'create' | 'rename' | 'import' | null;
 export default function MineScreen({navigation, route}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  // 皮肤：三个板块图标可自定义，有全局背景图时容器透明露出背景
+  const skin = useSkin();
   const [tab, setTab] = useState<TabKey>('pls');
   const [favs, setFavs] = useState<Song[]>([]);
   // 最近播放实时订阅（切歌/清空自动刷新）
@@ -131,13 +134,14 @@ export default function MineScreen({navigation, route}: any) {
 
   /** 导入 QQ 音乐歌单（原设置页逻辑迁移至此） */
   const doImport = async (input: string) => {
-    const id = parsePlaylistId(input);
-    if (!id) {
-      AppAlert.alert('无法识别', '请粘贴 QQ 音乐歌单分享链接或输入歌单 ID');
-      return;
-    }
+    // 分享短链需请求跟随重定向才能拿到歌单 ID，解析全程显示加载遮罩
     setImporting(true);
     try {
+      const id = await resolvePlaylistId(input);
+      if (!id) {
+        AppAlert.alert('无法识别', '请粘贴 QQ 音乐歌单分享链接或输入歌单 ID');
+        return;
+      }
       const data = await getPlaylist(id);
       const rawSongs = data?.songs ?? [];
       if (!rawSongs.length) {
@@ -237,8 +241,27 @@ export default function MineScreen({navigation, route}: any) {
     ]);
   };
 
+  /** 板块卡片图标：皮肤自定义图片优先，未设置时用内置 Icon；
+   * 固定高度图标区让自定义图(44)与内置图(30)混搭时三张卡片内容对齐 */
+  const renderCardIcon = (uri: string | undefined, fallback: React.ReactNode) => (
+    <View style={styles.cardIconBox}>
+      {uri ? (
+        <Image
+          source={{uri}}
+          style={styles.cardSkinIcon}
+          resizeMode="cover"
+          resizeMethod="resize"
+        />
+      ) : (
+        fallback
+      )}
+    </View>
+  );
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
       <View style={styles.headerRow}>
         <Text style={styles.pageTitle}>我的</Text>
         <TouchableOpacity
@@ -253,19 +276,22 @@ export default function MineScreen({navigation, route}: any) {
         <TouchableOpacity
           style={styles.card}
           onPress={() => navigation.navigate('Local')}>
-          <Icon name="phone" size={30} />
+          {renderCardIcon(skin.mineLocal, <Icon name="phone" size={30} />)}
           <Text style={styles.cardText}>本地音乐</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.card}
           onPress={() => navigation.navigate('Download')}>
-          <Icon name="downloadFilled" size={30} color={t.primary} />
+          {renderCardIcon(
+            skin.mineDownload,
+            <Icon name="downloadFilled" size={30} color={t.primary} />,
+          )}
           <Text style={styles.cardText}>下载管理</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.card}
           onPress={() => navigation.navigate('NowPlaying')}>
-          <Icon name="headset" size={30} />
+          {renderCardIcon(skin.mineNowPlaying, <Icon name="headset" size={30} />)}
           <Text style={styles.cardText}>正在播放</Text>
         </TouchableOpacity>
       </View>
@@ -422,6 +448,7 @@ export default function MineScreen({navigation, route}: any) {
       <Modal
         visible={inputKind !== null}
         transparent
+        statusBarTranslucent
         animationType="fade"
         onRequestClose={() => setInputKind(null)}>
         <View style={styles.dialogMask}>
@@ -488,6 +515,12 @@ export default function MineScreen({navigation, route}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    // 有自定义背景图时透明，露出 MainTabs 层的背景图
+    transparentBg: {backgroundColor: 'transparent'},
+    // 图标区固定高度取自定义图尺寸，内置图居中，三张卡片混搭不错位
+    cardIconBox: {height: 44, justifyContent: 'center', alignItems: 'center'},
+    // 皮肤自定义板块图标：比内置 Icon 大一号更醒目（图片图标视觉上比线条图形显小），圆角裁剪自动缩放
+    cardSkinIcon: {width: 44, height: 44, borderRadius: 10},
     headerRow: {
       flexDirection: 'row',
       alignItems: 'center',

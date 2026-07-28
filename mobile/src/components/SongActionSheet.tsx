@@ -159,6 +159,7 @@ export default function SongActionSheet({
     <Modal
       visible={!!song}
       transparent
+      statusBarTranslucent
       animationType="slide"
       onRequestClose={onClose}>
       <TouchableOpacity

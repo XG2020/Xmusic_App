@@ -133,8 +133,53 @@ export function parsePlaylistId(input: string): number | undefined {
   if (/^\d+$/.test(s)) {
     return Number(s);
   }
-  const m = s.match(/[?&]id=(\d+)/);
+  // 查询参数式（...?id=123）与路径式（.../playlist/123）两种落地页格式
+  const m = s.match(/[?&]id=(\d+)/) ?? s.match(/\/playlist\/(\d+)/);
   return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * 解析歌单 ID（支持分享短链）：直接解析不出时，把输入里的链接
+ * （如 https://c6.y.qq.com/base/fcgi-bin/u?__=xxx）请求一次跟随重定向，
+ * 用最终落地页地址再解析；落地页地址也没有时从页面内容里找 disstid
+ */
+export async function resolvePlaylistId(
+  input: string,
+): Promise<number | undefined> {
+  const direct = parsePlaylistId(input);
+  if (direct) {
+    return direct;
+  }
+  // 分享文本常混着文案，抠出第一个链接
+  const urlMatch = input.match(/https?:\/\/[^\s，。"'<>]+/i);
+  if (!urlMatch) {
+    return undefined;
+  }
+  // fetch 无内置超时，短链服务偶发不响应时用 AbortController 兜底
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(urlMatch[0], {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+      },
+      signal: controller.signal,
+    });
+    // fetch 自动跟随 302，res.url 即最终落地页地址
+    const fromUrl = parsePlaylistId(res.url ?? '');
+    if (fromUrl) {
+      return fromUrl;
+    }
+    const html = await res.text();
+    const m =
+      html.match(/\bdisstid[=:"']+(\d{4,})/i) ?? html.match(/[?&]id=(\d{4,})/);
+    return m ? Number(m[1]) : undefined;
+  } catch (e) {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 歌单：兼容 QQ 原始结构（dirinfo/songlist）与文档结构（name/songs） */

@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   Image,
-  StatusBar,
   RefreshControl,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -15,11 +14,14 @@ import {playSongs} from '../services/player';
 import {autoOpenPlayerEnabled, showRankTabEnabled} from '../services/settings';
 import {getTopGroups, RankInfo} from '../services/api';
 import Icon from '../components/Icon';
+import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 
 export default function HomeScreen({navigation}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  // 皮肤：有自定义背景图时容器透明露出 MainTabs 层背景
+  const skin = useSkin();
   // 最近播放实时订阅（切歌/清空自动刷新）
   const recents = useRecentSongs();
   const [ranks, setRanks] = useState<RankInfo[]>([]);
@@ -46,11 +48,9 @@ export default function HomeScreen({navigation}: any) {
   }, [loadRanks]);
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar
-        barStyle={t.isDark ? 'light-content' : 'dark-content'}
-        backgroundColor={t.bg}
-      />
+    <SafeAreaView
+          style={[styles.container, !!skin.bg && styles.transparentBg]}
+          edges={['top']}>
       {/* 顶部标题栏 */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>推荐</Text>
@@ -178,6 +178,7 @@ export default function HomeScreen({navigation}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+        transparentBg: {backgroundColor: 'transparent'},
     header: {
       flexDirection: 'row',
       alignItems: 'center',

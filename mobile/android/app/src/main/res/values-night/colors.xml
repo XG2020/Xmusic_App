@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动窗口底色，与 JS 主题深色 bg 一致 -->
+    <color name="splashBackground">#0F1B2A</color>
+</resources>

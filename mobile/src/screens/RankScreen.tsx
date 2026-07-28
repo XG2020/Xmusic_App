@@ -22,6 +22,7 @@ import {playSongsProgressive} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
+import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 import type {Song} from '../types/music';
 
@@ -60,6 +61,8 @@ async function resolveRankBatch(batch: Song[]): Promise<Song[]> {
 export default function RankScreen({navigation, route, lockPager}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  // 皮肤：作为主页 pager 子页且有背景图时容器透明
+  const skin = useSkin();
   // 作为独立 Stack 页打开时（底栏入口关闭后从首页榜单卡进入）显示返回键
   const standalone = route?.name === 'Rank';
   const [ranks, setRanks] = useState<RankInfo[]>(FALLBACK_RANKS);
@@ -139,7 +142,9 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView
+          style={[styles.container, !standalone && !!skin.bg && styles.transparentBg]}
+          edges={['top']}>
       <View style={styles.titleRow}>
         {standalone && (
           <TouchableOpacity
@@ -191,6 +196,10 @@ export default function RankScreen({navigation, route, lockPager}: any) {
         <FlatList
           data={songs}
           keyExtractor={(item, i) => String(item.id ?? `${item.title}-${i}`)}
+          initialNumToRender={12}
+          maxToRenderPerBatch={16}
+          windowSize={9}
+          removeClippedSubviews
           ListEmptyComponent={
             <Text style={styles.empty}>榜单加载失败，下拉重试</Text>
           }
@@ -202,7 +211,11 @@ export default function RankScreen({navigation, route, lockPager}: any) {
                 {index + 1}
               </Text>
               {item.coverUrl ? (
-                <Image source={{uri: item.coverUrl}} style={styles.cover} />
+                <Image
+                  source={{uri: item.coverUrl}}
+                  style={styles.cover}
+                  resizeMethod="resize"
+                />
               ) : (
                 <View style={[styles.cover, styles.coverFallback]}>
                   <Text style={styles.coverFallbackText}>♪</Text>
@@ -242,6 +255,7 @@ export default function RankScreen({navigation, route, lockPager}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+        transparentBg: {backgroundColor: 'transparent'},
     titleRow: {
       flexDirection: 'row',
       alignItems: 'center',

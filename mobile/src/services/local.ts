@@ -1,6 +1,6 @@
 import {NativeModules, Platform} from 'react-native';
 import RNFS from 'react-native-fs';
-import {getScanFolders} from './settings';
+import {getDownloadDir, getScanFolders} from './settings';
 import {enrichLocalSong, QUALITY_TAG_RE} from './download';
 import type {Song} from '../types/music';
 
@@ -83,12 +83,17 @@ async function getMediaStoreSongs(): Promise<Song[]> {
  * MediaStore + 常用目录（Music/Download/应用下载目录）+ 用户自定义文件夹，按路径去重
  */
 export async function scanLocalSongs(): Promise<Song[]> {
-  const customDirs = await getScanFolders();
+  const [customDirs, downloadDir] = await Promise.all([
+    getScanFolders(),
+    getDownloadDir(),
+  ]);
   const [mediaSongs, ...dirResults] = await Promise.all([
     getMediaStoreSongs(),
     scanDir(RNFS.DownloadDirectoryPath ?? '/storage/emulated/0/Download'),
     scanDir('/storage/emulated/0/Music'),
     scanDir(RNFS.DocumentDirectoryPath, 1),
+    // 自定义下载目录（未设置时为空串跳过），新下载的歌不依赖 MediaStore 收录
+    ...(downloadDir ? [scanDir(downloadDir, 2)] : []),
     // 自定义文件夹允许更深的递归
     ...customDirs.map(dir => scanDir(dir, 4)),
   ]);

@@ -338,6 +338,9 @@ export default function SettingsScreen({navigation}: any) {
             MODE_OPTIONS.find(o => o.value === mode)?.label ?? '跟随系统',
             () => setSheet('theme'),
           )}
+          {renderRow('个性化装扮', '', () =>
+            navigation.navigate('Personalize'),
+          )}
           {renderRow('字号大小', fontSizeLabel(fontSize), () =>
             setSheet('font'),
           )}
@@ -391,6 +394,7 @@ export default function SettingsScreen({navigation}: any) {
       <Modal
         visible={sheet !== null}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setSheet(null)}>
         <TouchableOpacity
@@ -515,6 +519,7 @@ export default function SettingsScreen({navigation}: any) {
       <Modal
         visible={dirModal}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setDirModal(false)}>
         <View style={styles.sheetMask}>

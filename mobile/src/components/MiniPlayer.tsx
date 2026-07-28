@@ -94,6 +94,33 @@ function ProgressRing({
   );
 }
 
+/**
+ * 自订阅播放进度的进度环：把 useProgress 隔离在这个小组件里，
+ * 每秒的进度刷新只重渲小圆环，不带动常驻全局的整个 MiniPlayer
+ */
+function PlayProgressRing({
+  color,
+  trackColor,
+  innerColor,
+  children,
+}: {
+  color: string;
+  trackColor: string;
+  innerColor: string;
+  children: React.ReactNode;
+}) {
+  const progress = useProgress(1000);
+  return (
+    <ProgressRing
+      progress={progress.duration > 0 ? progress.position / progress.duration : 0}
+      color={color}
+      trackColor={trackColor}
+      innerColor={innerColor}>
+      {children}
+    </ProgressRing>
+  );
+}
+
 const ringStyles = StyleSheet.create({
   wrap: {
     width: RING_SIZE,
@@ -156,7 +183,6 @@ export default function MiniPlayer() {
   const styles = useMemo(() => createStyles(t), [t]);
   const track = useActiveTrack();
   const playback = usePlaybackState();
-  const progress = useProgress(1000);
   const navigation = useNavigation<any>();
   const translateX = useRef(new Animated.Value(0)).current;
   // 播放队列弹层
@@ -298,11 +324,8 @@ export default function MiniPlayer() {
       <TouchableOpacity
         style={styles.ctrl}
         onPress={() => (playing ? TrackPlayer.pause() : TrackPlayer.play())}>
-        {/* 圆形进度环：灰底 + 绿色进度圆弧 */}
-        <ProgressRing
-          progress={
-            progress.duration > 0 ? progress.position / progress.duration : 0
-          }
+        {/* 圆形进度环：灰底 + 绿色进度圆弧（自订阅进度，不带动整条重渲） */}
+        <PlayProgressRing
           color={t.primary}
           trackColor={t.isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.15)'}
           innerColor={t.card}>
@@ -312,7 +335,7 @@ export default function MiniPlayer() {
           ) : (
             <Icon name="play" size={14} color={t.primary} />
           )}
-        </ProgressRing>
+        </PlayProgressRing>
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.listBtn}
@@ -329,6 +352,7 @@ export default function MiniPlayer() {
       <Modal
         visible={queueSheet}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setQueueSheet(false)}>
         <TouchableOpacity

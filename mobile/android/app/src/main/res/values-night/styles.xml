@@ -1,0 +1,12 @@
+<resources>
+
+    <!-- 深色模式主题：与 values/styles.xml 保持一致，仅状态栏图标改浅色 -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <!-- 冷启动阶段状态栏即透明+浅色图标（深色底），与 JS 侧沉浸式状态栏一致 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+</resources>

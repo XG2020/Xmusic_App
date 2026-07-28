@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {InteractionManager} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {Song} from '../types/music';
 
@@ -30,15 +31,50 @@ export async function getRecentSongs(): Promise<Song[]> {
   return readList(RECENT_KEY);
 }
 
-export async function addRecentSongs(songs: Song[]) {
-  const old = await readList(RECENT_KEY);
-  const merged = [...songs, ...old.filter(o => !songs.some(s => songKey(s) === songKey(o)))];
-  await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(merged.slice(0, MAX_RECENT)));
+// 待写入的最近播放：切歌瞬间 UI/音频最忙，不在此时做全量读写盘，
+// 先入队，延到交互/动画结束后合并落盘（短时间内多次切歌只写一次）
+let pendingRecent: Song[] = [];
+let recentFlushScheduled = false;
+
+async function flushRecent() {
+  const batch = pendingRecent;
+  pendingRecent = [];
+  recentFlushScheduled = false;
+  if (!batch.length) {
+    return;
+  }
+  try {
+    const old = await readList(RECENT_KEY);
+    const merged = [
+      ...batch,
+      ...old.filter(o => !batch.some(s => songKey(s) === songKey(o))),
+    ];
+    await AsyncStorage.setItem(
+      RECENT_KEY,
+      JSON.stringify(merged.slice(0, MAX_RECENT)),
+    );
+  } catch (e) {}
   notifyRecent();
+}
+
+export async function addRecentSongs(songs: Song[]) {
+  // 新播放的排前，去掉队内旧的重复项
+  pendingRecent = [
+    ...songs,
+    ...pendingRecent.filter(o => !songs.some(s => songKey(s) === songKey(o))),
+  ];
+  if (recentFlushScheduled) {
+    return;
+  }
+  recentFlushScheduled = true;
+  InteractionManager.runAfterInteractions(() => {
+    flushRecent();
+  });
 }
 
 /** 清空最近播放记录 */
 export async function clearRecentSongs() {
+  pendingRecent = [];
   await AsyncStorage.removeItem(RECENT_KEY).catch(() => {});
   notifyRecent();
 }

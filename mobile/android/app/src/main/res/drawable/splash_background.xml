@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 原生启动窗口背景：主题色底铺满全屏 + 居中 logo 图（图底色与主题色相同，无接缝），
+     任何屏幕比例都无缺口，与 JS 侧 Splash 的居中固定 dp 绘制几何一致 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splashBackground" />
+    <item>
+        <bitmap
+            android:src="@drawable/splash_image"
+            android:gravity="center" />
+    </item>
+</layer-list>

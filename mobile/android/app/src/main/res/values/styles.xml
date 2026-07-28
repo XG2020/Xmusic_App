@@ -4,6 +4,18 @@
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <!-- 启动窗口直接显示启动图，消除冷启动灰屏；RN 首帧的 JS Splash 是同一张图，无缝衔接 -->
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <!-- 冷启动阶段状态栏即透明+深色图标（浅色底），与 JS 侧沉浸式状态栏一致，避免启动时状态栏样式跳变 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+    <!-- 设置过自定义启动图时使用：启动窗口只显示纯色底，不显示默认 logo 图
+         （自定义图由 JS Splash 绘制，原生阶段读不到皮肤配置，用同主题纯色过渡最平滑）。
+         隐式继承 AppTheme，夜间模式自动套用 values-night 的父主题与底色 -->
+    <style name="AppTheme.CustomSplash">
+        <item name="android:windowBackground">@color/splashBackground</item>
     </style>
 
 </resources>
