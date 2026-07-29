@@ -14,10 +14,56 @@ import {playSongs} from '../services/player';
 import {autoOpenPlayerEnabled, showRankTabEnabled} from '../services/settings';
 import {getTopGroups, RankInfo} from '../services/api';
 import Icon from '../components/Icon';
+import PlaylistSquareScreen from './PlaylistSquareScreen';
 import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 
-export default function HomeScreen({navigation}: any) {
+/** 首页顶部「推荐 | 歌单」双 tab + 下载入口（推荐页与歌单页共用） */
+export function HomeHeader({navigation, active, goTab}: any) {
+  const {t} = useTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
+  return (
+    <View style={styles.header}>
+      <View style={styles.headerTabs}>
+        <TouchableOpacity onPress={() => goTab?.(0)}>
+          <Text
+            style={active === 0 ? styles.headerTitle : styles.headerTitleDim}>
+            推荐
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => goTab?.(1)}>
+          <Text
+            style={active === 1 ? styles.headerTitle : styles.headerTitleDim}>
+            歌单
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <TouchableOpacity
+        style={styles.headerDisc}
+        onPress={() => navigation.navigate('Download')}
+        hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}>
+        <Icon name="downloadFilled" size={25} color={t.text} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+/** 主页 pager 第二页：歌单（顶部同款双 tab，内容为歌单搜索页） */
+export function PlaylistTabPage({navigation, goTab}: any) {
+  const {t} = useTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
+  const skin = useSkin();
+  return (
+    <SafeAreaView
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
+      <HomeHeader navigation={navigation} active={1} goTab={goTab} />
+      <PlaylistSquareScreen navigation={navigation} />
+    </SafeAreaView>
+  );
+}
+
+export default function HomeScreen({navigation, goTab}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   // 皮肤：有自定义背景图时容器透明露出 MainTabs 层背景
@@ -51,16 +97,8 @@ export default function HomeScreen({navigation}: any) {
     <SafeAreaView
           style={[styles.container, !!skin.bg && styles.transparentBg]}
           edges={['top']}>
-      {/* 顶部标题栏 */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>推荐</Text>
-        <TouchableOpacity
-          style={styles.headerDisc}
-          onPress={() => navigation.navigate('Download')}
-          hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}>
-          <Icon name="downloadFilled" size={25} color={t.text} />
-        </TouchableOpacity>
-      </View>
+      {/* 顶部标题栏：推荐 / 歌单 双 tab（歌单页是主页 pager 独立一页，点击切外层） */}
+      <HomeHeader navigation={navigation} active={0} goTab={goTab} />
 
       {/* 搜索栏 */}
       <TouchableOpacity
@@ -186,6 +224,7 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 16,
       paddingTop: 8,
     },
+    headerTabs: {flexDirection: 'row', alignItems: 'flex-end', gap: 18},
     headerTitle: {
       fontSize: 24,
       fontWeight: '800',
@@ -193,6 +232,13 @@ const createStyles = (t: Theme) =>
       borderBottomWidth: 3,
       borderColor: t.primary,
       paddingBottom: 2,
+    },
+    // 未选中 tab：灰色无下划线，字号稍小底部对齐
+    headerTitleDim: {
+      fontSize: 19,
+      fontWeight: '700',
+      color: t.sub,
+      paddingBottom: 4,
     },
     // 下载入口：无底色纯图标
     headerDisc: {
@@ -209,6 +255,8 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 14,
       marginHorizontal: 16,
       marginTop: 12,
+      // 与下方滚动内容留出间隔，避免榜单滑动时视觉上贴住搜索框
+      marginBottom: 10,
     },
     searchInner: {flexDirection: 'row', alignItems: 'center', gap: 6},
     searchHint: {fontSize: 13, color: t.sub},

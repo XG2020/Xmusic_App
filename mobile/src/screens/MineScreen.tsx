@@ -25,8 +25,19 @@ import {
   useRecentSongs,
   songKey,
   LocalPlaylist,
+  getFavPlaylists,
+  subscribeFavPlaylists,
+  toggleFavPlaylist,
+  updateFavPlaylistMeta,
+  replaceLocalPlaylistSongs,
+  FavPlaylist,
 } from '../services/store';
-import {getPlaylist, resolvePlaylistId, resolveSongUrls} from '../services/api';
+import {
+  getPlaylist,
+  getPlaylistFresh,
+  resolvePlaylistId,
+  resolveSongUrls,
+} from '../services/api';
 import {playSongs, playSongsProgressive} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
 import SongActionSheet from '../components/SongActionSheet';
@@ -50,6 +61,8 @@ export default function MineScreen({navigation, route}: any) {
   // 最近播放实时订阅（切歌/清空自动刷新）
   const recents = useRecentSongs();
   const [playlists, setPlaylists] = useState<LocalPlaylist[]>([]);
+  // 收藏的在线歌单（收藏/取消实时同步）
+  const [favPls, setFavPls] = useState<FavPlaylist[]>([]);
   const [actionSong, setActionSong] = useState<Song | null>(null);
   // 输入弹窗
   const [inputKind, setInputKind] = useState<InputKind>(null);
@@ -60,9 +73,13 @@ export default function MineScreen({navigation, route}: any) {
   const reload = useCallback(() => {
     getFavSongs().then(setFavs);
     getLocalPlaylists().then(setPlaylists);
+    getFavPlaylists().then(setFavPls);
   }, []);
 
   useFocusEffect(reload);
+
+  // 主页 pager 内 useFocusEffect 不一定触发，订阅收藏变更保证实时刷新
+  useEffect(() => subscribeFavPlaylists(reload), [reload]);
 
   // 推荐页「更多」跳转：携带 tab 参数切到最近播放
   useEffect(() => {
@@ -79,9 +96,13 @@ export default function MineScreen({navigation, route}: any) {
     setInputKind(kind);
   };
 
-  /** 长按自定义歌单：重命名 / 删除 */
+  /** 长按自定义歌单：同步更新（导入的） / 重命名 / 删除 */
   const onLongPressPlaylist = (pl: LocalPlaylist) => {
     AppAlert.alert(`《${pl.name}》`, undefined, [
+      // 导入的歌单记录了来源 ID，可跟随原歌单同步更新
+      ...(pl.sourceId
+        ? [{text: '同步更新（跟随原歌单）', onPress: () => syncLocalPl(pl)}]
+        : []),
       {text: '重命名', onPress: () => openInput('rename', pl)},
       {
         text: '删除',
@@ -171,7 +192,8 @@ export default function MineScreen({navigation, route}: any) {
         {
           text: '新建本地歌单',
           onPress: async () => {
-            await createLocalPlaylist(name, songs, data?.coverUrl);
+            // 记录来源歌单 ID，供后续「同步更新」跟随原歌单
+            await createLocalPlaylist(name, songs, data?.coverUrl, id);
             reload();
           },
         },
@@ -183,6 +205,68 @@ export default function MineScreen({navigation, route}: any) {
       ]);
     } catch (e) {
       AppAlert.alert('导入失败', '请检查网络或确认歌单是否公开');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  /** 同步导入的本地歌单：拉取原歌单最新内容整体替换（保留用户改的名字） */
+  const syncLocalPl = async (pl: LocalPlaylist) => {
+    setImporting(true);
+    try {
+      const data = await getPlaylistFresh(Number(pl.sourceId));
+      const rawSongs = data?.songs ?? [];
+      if (!rawSongs.length) {
+        AppAlert.alert('同步失败', '原歌单为空或已被删除');
+        return;
+      }
+      // 与导入时一致：重新检测无播放地址的歌，打标灰显
+      let songs = rawSongs;
+      try {
+        const resolved = await resolveSongUrls(rawSongs);
+        const playable = new Set(resolved.map(songKey));
+        songs = rawSongs.map(s =>
+          playable.has(songKey(s)) ? s : {...s, unplayable: true},
+        );
+      } catch (e) {
+        // 检测失败不阻断同步，播放时会自动补标
+      }
+      const diff = songs.length - pl.songs.length;
+      await replaceLocalPlaylistSongs(pl.id, songs, data?.coverUrl);
+      reload();
+      AppAlert.alert(
+        '同步完成',
+        `《${pl.name}》现有 ${songs.length} 首${
+          diff > 0
+            ? `，新增 ${diff} 首`
+            : diff < 0
+            ? `，减少 ${-diff} 首`
+            : '，无变化'
+        }`,
+      );
+    } catch (e) {
+      AppAlert.alert('同步失败', '请检查网络或确认原歌单是否公开');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  /** 同步收藏的在线歌单：刷新摘要并丢缓存，下次进入即为最新内容 */
+  const syncFavPl = async (pl: FavPlaylist) => {
+    setImporting(true);
+    try {
+      const data = await getPlaylistFresh(Number(pl.id));
+      await updateFavPlaylistMeta(pl.id, {
+        name: data?.name || pl.name,
+        coverUrl: data?.coverUrl ?? pl.coverUrl,
+        songCount: data?.songs?.length ?? 0,
+      });
+      AppAlert.alert(
+        '同步完成',
+        `《${data?.name || pl.name}》最新共 ${data?.songs?.length ?? 0} 首`,
+      );
+    } catch (e) {
+      AppAlert.alert('同步失败', '请检查网络或确认歌单是否公开');
     } finally {
       setImporting(false);
     }
@@ -206,10 +290,30 @@ export default function MineScreen({navigation, route}: any) {
     }
   };
 
-  /** 歌单 tab 数据：我喜欢置顶（虚拟项 id 为 __fav__） */
-  const plData: LocalPlaylist[] = [
-    {id: '__fav__', name: '我喜欢', songs: favs, createdAt: 0},
-    ...playlists,
+  /** 长按收藏歌单：同步更新 / 取消收藏（订阅回调自动刷新列表） */
+  const onLongPressFavPl = (pl: FavPlaylist) => {
+    AppAlert.alert(`《${pl.name}》`, undefined, [
+      {text: '同步更新', onPress: () => syncFavPl(pl)},
+      {
+        text: '取消收藏',
+        style: 'destructive',
+        onPress: () => {
+          toggleFavPlaylist(pl);
+        },
+      },
+      {text: '取消', style: 'cancel'},
+    ]);
+  };
+
+  /** 歌单 tab 行：我喜欢置顶 + 本地歌单 + 收藏的在线歌单 */
+  type PlRow = {key: string; local?: LocalPlaylist; fav?: FavPlaylist};
+  const plData: PlRow[] = [
+    {
+      key: '__fav__',
+      local: {id: '__fav__', name: '我喜欢', songs: favs, createdAt: 0},
+    },
+    ...playlists.map(p => ({key: p.id, local: p})),
+    ...favPls.map(p => ({key: `favpl_${p.id}`, fav: p})),
   ];
 
   /** 全部播放：我喜欢 + 全部本地歌单歌曲（按 songKey 去重，跳过不可播放的歌） */
@@ -360,18 +464,57 @@ export default function MineScreen({navigation, route}: any) {
           <FlatList
             showsVerticalScrollIndicator={false}
             data={plData}
-            keyExtractor={item => item.id}
+            keyExtractor={item => item.key}
             renderItem={({item}) => {
-              const isFavPl = item.id === '__fav__';
-              const cover = item.coverUrl ?? item.songs[0]?.coverUrl;
+              // 收藏的在线歌单行：点击在线加载，长按取消收藏
+              if (item.fav) {
+                const fav = item.fav;
+                return (
+                  <TouchableOpacity
+                    style={styles.plItem}
+                    onPress={() =>
+                      navigation.navigate('Playlist', {
+                        id: fav.id,
+                        name: fav.name,
+                        ts: Date.now(),
+                      })
+                    }
+                    onLongPress={() => onLongPressFavPl(fav)}
+                    delayLongPress={400}>
+                    <View style={styles.plCover}>
+                      {fav.coverUrl ? (
+                        <Image
+                          source={{uri: fav.coverUrl}}
+                          style={styles.plCoverImg}
+                        />
+                      ) : (
+                        <Text style={styles.plCoverPh}>♪</Text>
+                      )}
+                    </View>
+                    <View style={styles.itemInfo}>
+                      <Text style={styles.plTitle} numberOfLines={1}>
+                        {fav.name}
+                      </Text>
+                      <Text style={styles.plSub} numberOfLines={1}>
+                        {fav.songCount ? `${fav.songCount}首 · ` : ''}收藏的歌单
+                      </Text>
+                    </View>
+                    <Icon name="favOn" size={18} style={styles.plFavMark} />
+                    <Text style={styles.chevron}>›</Text>
+                  </TouchableOpacity>
+                );
+              }
+              const pl = item.local!;
+              const isFavPl = pl.id === '__fav__';
+              const cover = pl.coverUrl ?? pl.songs[0]?.coverUrl;
               return (
                 <TouchableOpacity
                   style={styles.plItem}
                   onPress={() =>
-                    navigation.navigate('PlaylistDetail', {id: item.id})
+                    navigation.navigate('PlaylistDetail', {id: pl.id})
                   }
                   onLongPress={
-                    isFavPl ? undefined : () => onLongPressPlaylist(item)
+                    isFavPl ? undefined : () => onLongPressPlaylist(pl)
                   }
                   delayLongPress={400}>
                   <View style={styles.plCover}>
@@ -385,10 +528,10 @@ export default function MineScreen({navigation, route}: any) {
                   </View>
                   <View style={styles.itemInfo}>
                     <Text style={styles.plTitle} numberOfLines={1}>
-                      {item.name}
+                      {pl.name}
                     </Text>
                     <Text style={styles.plSub} numberOfLines={1}>
-                      {item.songs.length}首
+                      {pl.songs.length}首
                     </Text>
                   </View>
                   <Text style={styles.chevron}>›</Text>
@@ -600,6 +743,7 @@ const createStyles = (t: Theme) =>
     importIcon: {fontSize: 20, color: t.sub},
     plTitle: {fontSize: 16, fontWeight: '600', color: t.text},
     plSub: {fontSize: 12, color: t.sub, marginTop: 5},
+    plFavMark: {marginRight: 2},
     chevron: {color: t.sub, fontSize: 20, paddingHorizontal: 4, marginTop: -2},
     itemInfo: {flex: 1},
     title: {fontSize: 15, fontWeight: '600', color: t.text},

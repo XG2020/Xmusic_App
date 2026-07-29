@@ -132,6 +132,8 @@ export type LocalPlaylist = {
   coverUrl?: string;
   songs: Song[];
   createdAt: number;
+  /** 来源 QQ 歌单 dissid（导入的歌单记录来源，用于同步更新） */
+  sourceId?: number | string;
 };
 
 const PLAYLISTS_KEY = 'local_playlists';
@@ -149,6 +151,7 @@ export async function createLocalPlaylist(
   name: string,
   songs: Song[],
   coverUrl?: string,
+  sourceId?: number | string,
 ): Promise<LocalPlaylist[]> {
   const list = await getLocalPlaylists();
   const pl: LocalPlaylist = {
@@ -157,10 +160,30 @@ export async function createLocalPlaylist(
     coverUrl,
     songs,
     createdAt: Date.now(),
+    sourceId,
   };
   const next = [pl, ...list];
   await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(next));
   return next;
+}
+
+/** 用来源歌单最新内容整体替换本地歌单（同步更新），返回替换后的歌单 */
+export async function replaceLocalPlaylistSongs(
+  id: string,
+  songs: Song[],
+  coverUrl?: string,
+): Promise<LocalPlaylist | undefined> {
+  const list = await getLocalPlaylists();
+  const pl = list.find(p => p.id === id);
+  if (!pl) {
+    return undefined;
+  }
+  pl.songs = songs;
+  if (coverUrl) {
+    pl.coverUrl = coverUrl;
+  }
+  await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(list));
+  return pl;
 }
 
 export async function removeLocalPlaylist(id: string): Promise<LocalPlaylist[]> {
@@ -252,5 +275,86 @@ export async function removeSongFromPlaylist(
   pl.songs = pl.songs.filter(s => songKey(s) !== songKey(song));
   await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(list));
   return pl;
+}
+
+// ===== 收藏的在线歌单（只存摘要，进入时按 dissid 在线加载歌曲） =====
+
+export type FavPlaylist = {
+  /** QQ 歌单 dissid */
+  id: number | string;
+  name: string;
+  coverUrl?: string;
+  songCount?: number;
+  createdAt: number;
+};
+
+const FAV_PLS_KEY = 'fav_playlists';
+
+// 收藏变更通知：收藏发生在歌单页/搜索页，「我的」页需实时感知
+const favPlListeners = new Set<() => void>();
+
+/** 订阅收藏歌单变更，返回取消订阅函数 */
+export function subscribeFavPlaylists(l: () => void) {
+  favPlListeners.add(l);
+  return () => {
+    favPlListeners.delete(l);
+  };
+}
+
+export async function getFavPlaylists(): Promise<FavPlaylist[]> {
+  try {
+    const raw = await AsyncStorage.getItem(FAV_PLS_KEY);
+    return raw ? (JSON.parse(raw) as FavPlaylist[]) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function isFavPlaylist(id: number | string): Promise<boolean> {
+  return (await getFavPlaylists()).some(p => String(p.id) === String(id));
+}
+
+/** 收藏 / 取消收藏在线歌单，返回操作后是否为已收藏 */
+export async function toggleFavPlaylist(
+  pl: Omit<FavPlaylist, 'createdAt'>,
+): Promise<boolean> {
+  const list = await getFavPlaylists();
+  const exists = list.some(p => String(p.id) === String(pl.id));
+  const next = exists
+    ? list.filter(p => String(p.id) !== String(pl.id))
+    : [{...pl, createdAt: Date.now()}, ...list];
+  await AsyncStorage.setItem(FAV_PLS_KEY, JSON.stringify(next));
+  favPlListeners.forEach(l => l());
+  return !exists;
+}
+
+/** 同步收藏歌单摘要（名称/封面/歌曲数跟随原歌单最新内容） */
+export async function updateFavPlaylistMeta(
+  id: number | string,
+  patch: Partial<Omit<FavPlaylist, 'id' | 'createdAt'>>,
+) {
+  const list = await getFavPlaylists();
+  const pl = list.find(p => String(p.id) === String(id));
+  if (!pl) {
+    return;
+  }
+  Object.assign(pl, patch);
+  await AsyncStorage.setItem(FAV_PLS_KEY, JSON.stringify(list));
+  favPlListeners.forEach(l => l());
+}
+
+/** Hook：收藏歌单 id 集合（收藏/取消实时刷新），用于列表行收藏态展示 */
+export function useFavPlaylistIds(): Set<string> {
+  const [ids, setIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const load = () => {
+      getFavPlaylists().then(list =>
+        setIds(new Set(list.map(p => String(p.id)))),
+      );
+    };
+    load();
+    return subscribeFavPlaylists(load);
+  }, []);
+  return ids;
 }
 

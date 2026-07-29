@@ -14,7 +14,7 @@ import {
 } from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
-import HomeScreen from './screens/HomeScreen';
+import HomeScreen, {PlaylistTabPage} from './screens/HomeScreen';
 import RankScreen from './screens/RankScreen';
 import MineScreen from './screens/MineScreen';
 import PlayerScreen from './screens/PlayerScreen';
@@ -62,7 +62,8 @@ const MINI_BAR_ROUTES = new Set([
 ]);
 
 /**
- * 主页容器：首页/排行/我的 横向 pager，可左右滑动切换 + 自绘底栏
+ * 主页容器：推荐/歌单/排行/我的 横向 pager，可左右滑动连续切换 + 自绘底栏。
+ * 推荐与歌单同属底栏「首页」tab（页0/1），顶部双 tab 与横滑联动。
  * 外部跳转指定页：navigation.navigate('Main', {tab: 'rank'|'mine', ...})
  */
 function MainTabs({navigation, route}: any) {
@@ -82,8 +83,9 @@ function MainTabs({navigation, route}: any) {
     setPage(0);
   }, [showRank]);
 
-  const tabs = showRank ? TABS : [TABS[0], TABS[2]];
-  const mineIndex = showRank ? 2 : 1;
+  // 页序：0 推荐、1 歌单、2 排行（可关）、末位 我的
+  const rankIndex = 2;
+  const mineIndex = showRank ? 3 : 2;
 
   const go = (i: number) => {
     // 点击切页直接定位不做滚动动画：程序滚动是固定时长补间不跟手，
@@ -101,12 +103,24 @@ function MainTabs({navigation, route}: any) {
   const params = route?.params ?? {};
   useEffect(() => {
     if (params.tab === 'rank' && showRank) {
-      go(1);
+      go(rankIndex);
     } else if (params.tab === 'mine') {
       go(mineIndex);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.tab, params.ts]);
+
+  // 底栏 tab -> 目标页与选中判定（首页 tab 覆盖推荐/歌单两页）
+  const tabPages = showRank
+    ? [
+        {tab: TABS[0], target: 0, active: page <= 1},
+        {tab: TABS[1], target: rankIndex, active: page === rankIndex},
+        {tab: TABS[2], target: mineIndex, active: page === mineIndex},
+      ]
+    : [
+        {tab: TABS[0], target: 0, active: page <= 1},
+        {tab: TABS[2], target: mineIndex, active: page === mineIndex},
+      ];
 
   return (
     <View style={[styles.mainWrap, {backgroundColor: t.bg}]}>
@@ -135,7 +149,10 @@ function MainTabs({navigation, route}: any) {
           setPage(Math.round(e.nativeEvent.contentOffset.x / width))
         }>
         <View style={{width}}>
-          <HomeScreen navigation={navigation} />
+          <HomeScreen navigation={navigation} goTab={go} />
+        </View>
+        <View style={{width}}>
+          <PlaylistTabPage navigation={navigation} goTab={go} />
         </View>
         {showRank && (
           <View style={{width}}>
@@ -159,9 +176,7 @@ function MainTabs({navigation, route}: any) {
           styles.tabBar,
           {backgroundColor: t.card, paddingBottom: Math.max(insets.bottom, 6)},
         ]}>
-        {tabs.map(tab => {
-          const i = tabs.indexOf(tab);
-          const active = page === i;
+        {tabPages.map(({tab, target, active}) => {
           const color = active ? t.primary : t.sub;
           const customIcon = skin[tab.slot];
           return (
@@ -169,7 +184,7 @@ function MainTabs({navigation, route}: any) {
               key={tab.label}
               style={styles.tabItem}
               activeOpacity={0.8}
-              onPress={() => go(i)}>
+              onPress={() => go(target)}>
               {/* 固定高度图标区：自定义图(30)与内置图(23)混搭时文字基线也对齐 */}
               <View style={styles.tabIconBox}>
                 {customIcon ? (

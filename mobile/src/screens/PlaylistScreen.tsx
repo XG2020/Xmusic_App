@@ -1,4 +1,4 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {
   View,
   Text,
@@ -14,28 +14,36 @@ import {getPlaylist, getPreferredSongUrls, resolvePlaylistId} from '../services/
 import type {Song} from '../types/music';
 import {playSongs} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
-import {addRecentSongs} from '../services/store';
+import {addRecentSongs, isFavPlaylist, toggleFavPlaylist} from '../services/store';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
 import {useTheme, Theme} from '../theme';
 
-export default function PlaylistScreen({navigation}: any) {
+export default function PlaylistScreen({navigation, route}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
-  const [playlistId, setPlaylistId] = useState('');
-  const [name, setName] = useState('');
+  // 从歌单搜索结果进入时带 id/name 参数，自动加载并隐藏手动输入行
+  const routeId = route?.params?.id;
+  const routeName: string = route?.params?.name ?? '';
+  const [playlistId, setPlaylistId] = useState(routeId ? String(routeId) : '');
+  const [name, setName] = useState(routeName);
   const [songs, setSongs] = useState<Song[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
+  // 收藏在线歌单：记录成功加载的 dissid/封面用作收藏摘要
+  const [resolvedId, setResolvedId] = useState<string | number | null>(null);
+  const [coverUrl, setCoverUrl] = useState<string | undefined>(undefined);
+  const [faved, setFaved] = useState(false);
 
-  const load = async () => {
-    if (!playlistId.trim()) {
+  const load = async (input?: string) => {
+    const text = (input ?? playlistId).trim();
+    if (!text) {
       return;
     }
     // 分享短链需请求跟随重定向才能拿到歌单 ID，解析期间也显示加载态
     setLoading(true);
     try {
-      const id = await resolvePlaylistId(playlistId);
+      const id = await resolvePlaylistId(text);
       if (!id) {
         AppAlert.alert('无法识别', '请输入歌单 ID 或粘贴 QQ 音乐分享链接');
         return;
@@ -45,6 +53,9 @@ export default function PlaylistScreen({navigation}: any) {
       const mids = list.map(s => s.mid!).filter(Boolean);
       const urls = mids.length ? await getPreferredSongUrls(mids) : {};
       setName(data?.name ?? '');
+      setResolvedId(id);
+      setCoverUrl(data?.coverUrl);
+      isFavPlaylist(id).then(setFaved);
       setSongs(
         list.map(s => ({
           ...s,
@@ -58,6 +69,15 @@ export default function PlaylistScreen({navigation}: any) {
     }
   };
 
+  // 带 id 参数进入（歌单搜索结果点击）时自动加载
+  useEffect(() => {
+    if (routeId) {
+      setPlaylistId(String(routeId));
+      load(String(routeId));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, route?.params?.ts]);
+
   const playAt = (index: number) => {
     addRecentSongs([songs[index]]);
     playSongs(songs, index);
@@ -66,35 +86,69 @@ export default function PlaylistScreen({navigation}: any) {
     }
   };
 
+  /** 收藏/取消收藏当前歌单（成功加载后才可用） */
+  const onToggleFav = async () => {
+    if (!resolvedId) {
+      return;
+    }
+    const next = await toggleFavPlaylist({
+      id: resolvedId,
+      name: name || `歌单 ${resolvedId}`,
+      coverUrl: coverUrl ?? songs[0]?.coverUrl,
+      songCount: songs.length,
+    });
+    setFaved(next);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>‹</Text>
         </TouchableOpacity>
-        <Text style={styles.pageTitle}>歌单</Text>
+        <Text style={styles.pageTitle} numberOfLines={1}>
+          {name || '歌单'}
+        </Text>
       </View>
 
-      <View style={styles.row}>
-        <TextInput
-          style={styles.input}
-          placeholder="输入歌单 ID 或粘贴分享链接"
-          placeholderTextColor={t.sub}
-          value={playlistId}
-          onChangeText={setPlaylistId}
-          onSubmitEditing={load}
-        />
-        <TouchableOpacity style={styles.btn} onPress={load}>
-          <Text style={styles.btnText}>{loading ? '...' : '加载'}</Text>
-        </TouchableOpacity>
-      </View>
+      {/* 搜索结果进入时隐藏手动输入行（id 已确定） */}
+      {!routeId && (
+        <View style={styles.row}>
+          <TextInput
+            style={styles.input}
+            placeholder="输入歌单 ID 或粘贴分享链接"
+            placeholderTextColor={t.sub}
+            value={playlistId}
+            onChangeText={setPlaylistId}
+            onSubmitEditing={() => load()}
+          />
+          <TouchableOpacity style={styles.btn} onPress={() => load()}>
+            <Text style={styles.btnText}>{loading ? '...' : '加载'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
-      {!!name && <Text style={styles.playlistName}>{name}</Text>}
+      {!!name && !routeId && <Text style={styles.playlistName}>{name}</Text>}
       {songs.length > 0 && (
-        <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
-          <Text style={styles.playAllIcon}>▶</Text>
-          <Text style={styles.playAllText}>播放全部 ({songs.length})</Text>
-        </TouchableOpacity>
+        <View style={styles.playAllRow}>
+          <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
+            <Text style={styles.playAllIcon}>▶</Text>
+            <Text style={styles.playAllText}>播放全部 ({songs.length})</Text>
+          </TouchableOpacity>
+          {/* 在线歌单（有 dissid）才可收藏 */}
+          {!!resolvedId && (
+            <TouchableOpacity
+              style={styles.favBtn}
+              onPress={onToggleFav}
+              hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+              <Icon
+                name={faved ? 'favOn' : 'favOff'}
+                size={22}
+                color={faved ? undefined : t.sub}
+              />
+            </TouchableOpacity>
+          )}
+        </View>
       )}
 
       {loading ? (
@@ -142,7 +196,7 @@ const createStyles = (t: Theme) =>
       paddingVertical: 8,
     },
     backText: {fontSize: 30, color: t.text, lineHeight: 32, paddingHorizontal: 4},
-    pageTitle: {fontSize: 18, fontWeight: '700', color: t.text},
+    pageTitle: {fontSize: 18, fontWeight: '700', color: t.text, flex: 1},
     row: {flexDirection: 'row', gap: 8, paddingHorizontal: 12},
     input: {
       flex: 1,
@@ -167,15 +221,21 @@ const createStyles = (t: Theme) =>
       marginHorizontal: 16,
       marginTop: 12,
     },
+    playAllRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+    },
     playAll: {
+      flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
-      paddingHorizontal: 16,
       paddingVertical: 10,
     },
     playAllIcon: {color: t.primary, fontSize: 14},
     playAllText: {fontSize: 14, fontWeight: '700', color: t.text},
+    favBtn: {paddingHorizontal: 4, paddingVertical: 6},
     loading: {marginTop: 40},
     item: {
       flexDirection: 'row',

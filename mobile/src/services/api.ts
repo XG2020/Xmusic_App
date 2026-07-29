@@ -75,6 +75,117 @@ export async function search(keyword: string, type: 'song' | 'singer' | 'album' 
   });
 }
 
+/** 歌单搜索结果摘要（搜索/歌单广场列表项） */
+export type PlaylistInfo = {
+  dissid: number | string;
+  title: string;
+  coverUrl?: string;
+  songCount?: number;
+  listenNum?: number;
+  creatorName?: string;
+  introduction?: string;
+};
+
+/** 搜索歌单（type=playlist），实测返回字段：dissid/dissname/logo/songnum/listennum/nickname/description */
+export async function searchPlaylists(
+  keyword: string,
+  num = 20,
+  page = 1,
+): Promise<PlaylistInfo[]> {
+  const list = ((await search(keyword, 'playlist', num, page)) ?? []) as any[];
+  const stripEm = (s: any) => String(s ?? '').replace(/<\/?em>/g, '');
+  return list
+    .map(p => ({
+      dissid: p.dissid ?? p.tid ?? p.id,
+      title: stripEm(p.dissname ?? p.title ?? p.name),
+      coverUrl: httpsUrl(
+        p.logo ?? p.imgurl ?? p.imgUrl ?? p.cover ?? p.picurl ?? p.pic,
+      ),
+      songCount: p.songnum ?? p.song_count ?? p.songCount,
+      listenNum: p.listennum ?? p.listenNum ?? p.access_num ?? p.playNum,
+      creatorName:
+        stripEm(p.nickname ?? p.creator?.name ?? p.creator?.nick) || undefined,
+      introduction:
+        stripEm(p.description ?? p.introduction ?? p.desc)
+          .replace(/\s+/g, ' ')
+          .trim() || undefined,
+    }))
+    .filter(p => p.dissid && p.title) as PlaylistInfo[];
+}
+
+// ===== 歌单分类（QQ 官网歌单广场公开接口，直连 c.y.qq.com，与第三方 API 无关） =====
+
+export type PlaylistCategory = {id: number; name: string};
+export type PlaylistCategoryGroup = {group: string; items: PlaylistCategory[]};
+
+const QQ_HEADERS = {Referer: 'https://y.qq.com/'};
+const QQ_FCG_PARAMS = {format: 'json', inCharset: 'utf8', outCharset: 'utf-8'};
+
+/** 官网歌单分类配置（语种/流派/主题/心情/场景），变化极少长缓存 */
+export async function getPlaylistCategories(): Promise<PlaylistCategoryGroup[]> {
+  return cachedGet('plCategories', TTL_DETAIL, async () => {
+    const {data} = await axios.get(
+      'https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg',
+      {params: QQ_FCG_PARAMS, headers: QQ_HEADERS, timeout: 15000},
+    );
+    const cats: any[] = data?.data?.categories ?? [];
+    return cats
+      .map(c => ({
+        group: String(c.categoryGroupName ?? ''),
+        items: (c.items ?? []).map((i: any) => ({
+          id: i.categoryId,
+          // 分类名里的实体转义（如 R&#38;B → R&B）
+          name: String(i.categoryName ?? '').replace(/&#38;/g, '&'),
+        })),
+      }))
+      .filter(g => g.group && g.items.length) as PlaylistCategoryGroup[];
+  });
+}
+
+/** 「全部」分类 id（官网热门歌单） */
+export const CATEGORY_ALL_ID = 10000000;
+
+/** 按分类取官网歌单广场数据（sin/ein 区间分页），返回列表与总数 */
+export async function getPlaylistsByCategory(
+  categoryId: number,
+  num = 20,
+  page = 1,
+): Promise<{list: PlaylistInfo[]; total: number}> {
+  const sin = (page - 1) * num;
+  return cachedGet(`plByCat:${categoryId}:${num}:${page}`, TTL_PLAYLIST, async () => {
+    const {data} = await axios.get(
+      'https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg',
+      {
+        params: {
+          ...QQ_FCG_PARAMS,
+          sortId: 5,
+          categoryId,
+          sin,
+          ein: sin + num - 1,
+          picmid: 1,
+        },
+        headers: QQ_HEADERS,
+        timeout: 15000,
+      },
+    );
+    const d = data?.data ?? {};
+    const list = ((d.list ?? []) as any[])
+      .map(p => ({
+        dissid: p.dissid,
+        title: String(p.dissname ?? ''),
+        coverUrl: httpsUrl(p.imgurl),
+        listenNum: p.listennum,
+        creatorName: p.creator?.name || undefined,
+        introduction:
+          String(p.introduction ?? '')
+            .replace(/\s+/g, ' ')
+            .trim() || undefined,
+      }))
+      .filter(p => p.dissid && p.title) as PlaylistInfo[];
+    return {list, total: d.sum ?? 0};
+  });
+}
+
 /**
  * 批量取播放直链，按 mid+音质粒度缓存（持久化，重启后仍有效）：
  * 重复播同一歌单/重启恢复队列时命中缓存直接用，只请求未命中的 mid。
@@ -241,6 +352,12 @@ export async function getPlaylist(id: number): Promise<Playlist> {
       songs: rawSongs.map(s => normalizeSong(s)),
     } as Playlist;
   });
+}
+
+/** 绕过缓存拉取最新歌单内容（收藏/导入歌单「同步更新」用） */
+export async function getPlaylistFresh(id: number): Promise<Playlist> {
+  dropCache(`playlist:${id}:full`);
+  return getPlaylist(id);
 }
 
 export async function getSinger(mid: string) {
