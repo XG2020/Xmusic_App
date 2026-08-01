@@ -20,7 +20,18 @@ import TrackPlayer, {
   usePlaybackState,
   useProgress,
 } from 'react-native-track-player';
-import {skipToNext, skipToPrevious} from '../services/player';
+import {
+  skipToNextUser,
+  skipToPreviousUser,
+  resumeUser,
+  hasPendingRestore,
+  getPendingRestoreProgress,
+  getPendingRestoreTrack,
+  getPendingRestoreTracks,
+  getPendingRestoreIndex,
+  materializePendingSession,
+  subscribePendingRestore,
+} from '../services/player';
 import {getSwipeHintSeen, markSwipeHintSeen} from '../services/settings';
 import {useSpin} from '../utils/useSpin';
 import Marquee from './Marquee';
@@ -107,17 +118,26 @@ function PlayProgressRing({
   color,
   trackColor,
   innerColor,
+  fallbackPosition = 0,
+  fallbackDuration = 0,
   children,
 }: {
   color: string;
   trackColor: string;
   innerColor: string;
+  fallbackPosition?: number;
+  fallbackDuration?: number;
   children: React.ReactNode;
 }) {
   const progress = useProgress(1000);
+  const duration = progress.duration || fallbackDuration;
+  const position =
+    progress.duration > 0 || progress.position > 0
+      ? progress.position
+      : fallbackPosition;
   return (
     <ProgressRing
-      progress={progress.duration > 0 ? progress.position / progress.duration : 0}
+      progress={duration > 0 ? position / duration : 0}
       color={color}
       trackColor={trackColor}
       innerColor={innerColor}>
@@ -186,7 +206,24 @@ const ringStyles = StyleSheet.create({
 export default function MiniPlayer() {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
-  const track = useActiveTrack();
+  const nativeTrack = useActiveTrack();
+  // 延迟恢复：原生队列为空时回退显示上次会话快照的当前曲目
+  // （启动只显示不抢音频焦点，用户点播放才真正加载进原生播放器）
+  const [pendingTrack, setPendingTrack] = useState<Track | null>(() =>
+    getPendingRestoreTrack(),
+  );
+  const [pendingProgress, setPendingProgress] = useState(() =>
+    getPendingRestoreProgress(),
+  );
+  useEffect(
+    () =>
+      subscribePendingRestore(() => {
+        setPendingTrack(getPendingRestoreTrack());
+        setPendingProgress(getPendingRestoreProgress());
+      }),
+    [],
+  );
+  const track = nativeTrack ?? pendingTrack;
   const playback = usePlaybackState();
   const navigation = useNavigation<any>();
   const translateX = useRef(new Animated.Value(0)).current;
@@ -245,6 +282,12 @@ export default function MiniPlayer() {
     }
     (async () => {
       try {
+        // 延迟恢复未落地时，队列弹层回退显示快照队列（与迷你条显示保持一致）
+        if (hasPendingRestore()) {
+          setQueue(getPendingRestoreTracks());
+          setActiveIdx(getPendingRestoreIndex());
+          return;
+        }
         setQueue(await TrackPlayer.getQueue());
         setActiveIdx((await TrackPlayer.getActiveTrackIndex()) ?? -1);
       } catch (e) {
@@ -255,6 +298,8 @@ export default function MiniPlayer() {
 
   const playQueueItem = async (index: number) => {
     try {
+      // 延迟恢复未落地时：先把快照队列灌进原生播放器（用户主动播放，允许抢焦点）
+      await materializePendingSession();
       await TrackPlayer.skip(index);
       await TrackPlayer.play();
       setActiveIdx(index);
@@ -289,7 +334,7 @@ export default function MiniPlayer() {
             duration: 120,
             useNativeDriver: true,
           }).start(() => {
-            skipToNext();
+            skipToNextUser();
             translateX.setValue(80);
             springBack();
           });
@@ -300,7 +345,7 @@ export default function MiniPlayer() {
             duration: 120,
             useNativeDriver: true,
           }).start(() => {
-            skipToPrevious();
+            skipToPreviousUser();
             translateX.setValue(-80);
             springBack();
           });
@@ -351,12 +396,16 @@ export default function MiniPlayer() {
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.ctrl}
-        onPress={() => (playing ? TrackPlayer.pause() : TrackPlayer.play())}>
+        onPress={() => {
+          playing ? TrackPlayer.pause() : resumeUser();
+        }}>
         {/* 圆形进度环：灰底 + 绿色进度圆弧（自订阅进度，不带动整条重渲） */}
         <PlayProgressRing
           color={t.primary}
           trackColor={t.isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.15)'}
-          innerColor={t.card}>
+          innerColor={t.card}
+          fallbackPosition={!nativeTrack ? pendingProgress.position : 0}
+          fallbackDuration={!nativeTrack ? pendingProgress.duration : 0}>
           {/* 高清播控图标：pause 居中；play 三角素材自带右偏校正视觉居中 */}
           {playing ? (
             <Icon name="pause" size={14} color={t.primary} />

@@ -5,6 +5,7 @@ import {
   Image,
   StyleSheet,
   ScrollView,
+  Animated,
   TouchableOpacity,
   useWindowDimensions,
 } from 'react-native';
@@ -14,7 +15,7 @@ import {
 } from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
-import HomeScreen, {PlaylistTabPage} from './screens/HomeScreen';
+import HomeScreen, {PlaylistTabPage, HomeTopBar} from './screens/HomeScreen';
 import RankScreen from './screens/RankScreen';
 import MineScreen from './screens/MineScreen';
 import PlayerScreen from './screens/PlayerScreen';
@@ -72,6 +73,10 @@ function MainTabs({navigation, route}: any) {
   const {width} = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [page, setPage] = useState(0);
+  // 横滑进度（原生驱动）：驱动固定顶栏标题/搜索提示交叉渐变
+  const scrollX = useRef(new Animated.Value(0)).current;
+  // 固定顶栏实测高度：作为推荐/歌单两页内容的顶部内边距，避免被 overlay 遮住
+  const [headerH, setHeaderH] = useState(0);
   // 皮肤：自定义背景图与底栏图标
   const skin = useSkin();
   // 底栏排行榜入口开关（设置页切换后实时生效）
@@ -139,20 +144,25 @@ function MainTabs({navigation, route}: any) {
           />
         </>
       )}
-      <ScrollView
+      <Animated.ScrollView
         ref={pagerRef}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={16}
+        onScroll={Animated.event(
+          [{nativeEvent: {contentOffset: {x: scrollX}}}],
+          {useNativeDriver: true},
+        )}
         onMomentumScrollEnd={e =>
           setPage(Math.round(e.nativeEvent.contentOffset.x / width))
         }>
         <View style={{width}}>
-          <HomeScreen navigation={navigation} goTab={go} />
+          <HomeScreen navigation={navigation} topPad={headerH} />
         </View>
         <View style={{width}}>
-          <PlaylistTabPage navigation={navigation} goTab={go} />
+          <PlaylistTabPage navigation={navigation} topPad={headerH} />
         </View>
         {showRank && (
           <View style={{width}}>
@@ -169,7 +179,17 @@ function MainTabs({navigation, route}: any) {
             route={{params: {tab: params.mineTab, ts: params.ts}}}
           />
         </View>
-      </ScrollView>
+      </Animated.ScrollView>
+      {/* 固定顶栏 overlay：推荐/歌单双标题 + 下载入口 + 搜索栏，随横滑交叉渐变 */}
+      <HomeTopBar
+        navigation={navigation}
+        goTab={go}
+        page={page}
+        scrollX={scrollX}
+        width={width}
+        insetsTop={insets.top}
+        onHeight={setHeaderH}
+      />
       <MiniPlayer />
       <View
         style={[

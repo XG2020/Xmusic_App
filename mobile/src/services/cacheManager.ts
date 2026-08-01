@@ -1,6 +1,7 @@
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {clearApiCache, getApiCacheBytes} from './cache';
+import {clearCacheProgress} from './songCache';
 
 /**
  * 缓存管理：统计/清除应用缓存（封面图片等系统缓存目录 + API 响应缓存），
@@ -75,6 +76,9 @@ export async function clearAllCache() {
   } catch (e) {
     // 忽略清理失败
   }
+  // 整曲缓存文件已随缓存目录一并删除，重置内存中的下载进度记录，
+  // 避免播放页缓存条误判某首歌仍可整曲离线播放
+  clearCacheProgress();
 }
 
 /** 缓存超过上限时自动清理，返回是否触发了清理 */

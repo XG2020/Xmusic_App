@@ -12,6 +12,7 @@ import {
 import {
   getPlaylistCategories,
   getPlaylistsByCategory,
+  pinPlaylistCache,
   CATEGORY_ALL_ID,
   PlaylistCategoryGroup,
   PlaylistCategory,
@@ -43,7 +44,7 @@ export function formatListen(n?: number) {
  * 下方为官网歌单广场分类（横滑 chips + 展开全部分组网格），
  * 列表数据来自官方分类接口，点击进入在线歌单页加载歌曲
  */
-export default function PlaylistSquareScreen({navigation}: any) {
+export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   // 官网分类分组（语种/流派/主题/心情/场景）
@@ -129,13 +130,17 @@ export default function PlaylistSquareScreen({navigation}: any) {
   };
 
   /** 收藏/取消收藏歌单（只存摘要，「我的」页可见） */
-  const onToggleFav = (p: PlaylistInfo) => {
-    toggleFavPlaylist({
+  const onToggleFav = async (p: PlaylistInfo) => {
+    const next = await toggleFavPlaylist({
       id: p.dissid,
       name: p.title,
       coverUrl: p.coverUrl,
       songCount: p.songCount,
     });
+    if (next) {
+      // 若之前打开过该歌单，把已有内容缓存续期为长缓存
+      pinPlaylistCache(p.dissid);
+    }
   };
 
   // 横滑 chips：全部分组拍平（含「全部」）
@@ -143,16 +148,8 @@ export default function PlaylistSquareScreen({navigation}: any) {
 
   return (
     <View style={styles.container}>
-      {/* 搜索入口：复用推荐页搜索栏样式，点击进统一搜索页（默认歌单分类） */}
-      <TouchableOpacity
-        style={styles.searchBox}
-        activeOpacity={0.8}
-        onPress={() => navigation.navigate('Search', {tab: 'playlist'})}>
-        <View style={styles.searchInner}>
-          <Icon name="search" size={15} />
-          <Text style={styles.searchHint}>搜索歌单</Text>
-        </View>
-      </TouchableOpacity>
+      {/* 顶部搜索入口由主页固定 overlay 统一绘制，此处预留同高度留白 */}
+      {topPad > 0 && <View style={{height: topPad}} />}
 
       {/* 分类栏：横滑 chips + 展开全部 */}
       <View style={styles.catBar}>
@@ -315,19 +312,6 @@ export default function PlaylistSquareScreen({navigation}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1},
-    // 搜索入口：与推荐页搜索栏同款
-    searchBox: {
-      height: 38,
-      borderRadius: 19,
-      backgroundColor: t.card,
-      justifyContent: 'center',
-      paddingHorizontal: 14,
-      marginHorizontal: 16,
-      marginTop: 12,
-      marginBottom: 10,
-    },
-    searchInner: {flexDirection: 'row', alignItems: 'center', gap: 6},
-    searchHint: {fontSize: 13, color: t.sub},
     // 分类栏
     catBar: {flexDirection: 'row', alignItems: 'center', paddingRight: 10},
     catChips: {paddingHorizontal: 12, gap: 8, alignItems: 'center'},

@@ -11,6 +11,7 @@ import {
   Linking,
   Switch,
   TextInput,
+  ToastAndroid,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -34,6 +35,14 @@ import {
   setShowRankTab,
   getCoverSpin,
   setCoverSpin,
+  getDataReminder,
+  setDataReminder,
+  getCacheWhilePlay,
+  setCacheWhilePlay,
+  getWifiOnly,
+  setWifiOnly,
+  getAllowMix,
+  setAllowMix,
   getDownloadLyric,
   setDownloadLyric,
   getDownloadCover,
@@ -100,6 +109,14 @@ export default function SettingsScreen({navigation}: any) {
   const [showRank, setShowRank] = useState(true);
   // 播放页封面旋转
   const [spinOn, setSpinOn] = useState(true);
+  // 使用流量提醒
+  const [dataReminder, setDataReminderState] = useState(true);
+  // 边播边存
+  const [cacheWhilePlay, setCacheWhilePlayState] = useState(true);
+  // 仅 Wi-Fi 联网（默认关）
+  const [wifiOnly, setWifiOnlyState] = useState(false);
+  // 允许与其他应用同时播放（默认开）
+  const [allowMix, setAllowMixState] = useState(true);
   // 下载附件：同时下载歌词/封面
   const [dlLyric, setDlLyric] = useState(true);
   const [dlCover, setDlCover] = useState(true);
@@ -125,6 +142,10 @@ export default function SettingsScreen({navigation}: any) {
     getAutoOpenPlayer().then(setAutoOpen);
     getShowRankTab().then(setShowRank);
     getCoverSpin().then(setSpinOn);
+    getDataReminder().then(setDataReminderState);
+    getCacheWhilePlay().then(setCacheWhilePlayState);
+    getWifiOnly().then(setWifiOnlyState);
+    getAllowMix().then(setAllowMixState);
     getDownloadLyric().then(setDlLyric);
     getDownloadCover().then(setDlCover);
     getDevUnlocked().then(on => {
@@ -146,6 +167,28 @@ export default function SettingsScreen({navigation}: any) {
   const onToggleSpin = (on: boolean) => {
     setSpinOn(on);
     setCoverSpin(on).catch(() => {});
+  };
+
+  const onToggleDataReminder = (on: boolean) => {
+    setDataReminderState(on);
+    setDataReminder(on).catch(() => {});
+  };
+
+  const onToggleCacheWhilePlay = (on: boolean) => {
+    setCacheWhilePlayState(on);
+    setCacheWhilePlay(on).catch(() => {});
+  };
+
+  const onToggleWifiOnly = (on: boolean) => {
+    setWifiOnlyState(on);
+    setWifiOnly(on).catch(() => {});
+  };
+
+  const onToggleAllowMix = (on: boolean) => {
+    setAllowMixState(on);
+    setAllowMix(on).catch(() => {});
+    // 音频焦点模式在播放器创建时定死，切换后需重启应用才生效
+    ToastAndroid.show('重启应用后生效', ToastAndroid.SHORT);
   };
 
   const onToggleDlLyric = (on: boolean) => {
@@ -380,6 +423,36 @@ export default function SettingsScreen({navigation}: any) {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.body}>
+        {/* 网络 */}
+        <Text style={styles.groupTitle}>网络</Text>
+        <View style={styles.group}>
+          {/* 开关行：仅 Wi-Fi 联网（开启后移动网络下不播放在线歌曲，且仅 Wi-Fi 下边播边存缓存） */}
+          <View style={styles.row}>
+            <View style={styles.rowTextWrap}>
+              <Text style={styles.rowLabel}>仅Wi-Fi联网</Text>
+              <Text style={styles.rowSub}>
+                开启后移动网络下不播放在线歌曲，本地与已缓存歌曲不受限
+              </Text>
+            </View>
+            <Switch
+              value={wifiOnly}
+              onValueChange={onToggleWifiOnly}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
+          {/* 开关行：使用流量时弹窗提醒（关闭后蜂窝网络直接播放不提醒） */}
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>使用流量提醒</Text>
+            <Switch
+              value={dataReminder}
+              onValueChange={onToggleDataReminder}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
+        </View>
+
         {/* 播放与下载 */}
         <Text style={styles.groupTitle}>播放与下载</Text>
         <View style={styles.group}>
@@ -445,6 +518,16 @@ export default function SettingsScreen({navigation}: any) {
               thumbColor="#fff"
             />
           </View>
+          {/* 开关行：允许与其他应用同时播放（开：混音；关：其他应用出声则暂停，对方结束时恢复） */}
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>允许与其他应用同时播放</Text>
+            <Switch
+              value={allowMix}
+              onValueChange={onToggleAllowMix}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
           {/* 开关行：播放页封面旋转（关闭后唱片静止，减少动画开销） */}
           <View style={styles.row}>
             <Text style={styles.rowLabel}>播放页封面旋转</Text>
@@ -470,6 +553,16 @@ export default function SettingsScreen({navigation}: any) {
         {/* 存储与缓存 */}
         <Text style={styles.groupTitle}>存储与缓存</Text>
         <View style={styles.group}>
+          {/* 开关行：边播边存（在线播放时非蜂窝网络下后台缓存整曲，断网可回听/下次离线可播） */}
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>边播边存</Text>
+            <Switch
+              value={cacheWhilePlay}
+              onValueChange={onToggleCacheWhilePlay}
+              trackColor={{false: t.cardLight, true: t.primary}}
+              thumbColor="#fff"
+            />
+          </View>
           {renderRow(
             '清除缓存',
             clearingCache ? '清理中…' : formatBytes(cacheBytes),
@@ -809,6 +902,8 @@ const createStyles = (t: Theme) =>
       borderBottomColor: t.border,
     },
     rowLabel: {flex: 1, fontSize: 15, color: t.text},
+    rowTextWrap: {flex: 1, marginRight: 8},
+    rowSub: {color: t.sub, fontSize: 12, marginTop: 2, lineHeight: 16},
     rowValue: {color: t.sub, fontSize: 13, maxWidth: 160, marginRight: 4},
     rowArrow: {color: t.sub, fontSize: 18, lineHeight: 20},
     // 弹层

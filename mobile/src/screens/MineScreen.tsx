@@ -30,6 +30,7 @@ import {
   toggleFavPlaylist,
   updateFavPlaylistMeta,
   replaceLocalPlaylistSongs,
+  refreshFavPlayable,
   FavPlaylist,
 } from '../services/store';
 import {
@@ -39,6 +40,7 @@ import {
   resolveSongUrls,
 } from '../services/api';
 import {playSongs, playSongsProgressive} from '../services/player';
+import {isConnected} from '../services/network';
 import {autoOpenPlayerEnabled} from '../services/settings';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
@@ -305,6 +307,46 @@ export default function MineScreen({navigation, route}: any) {
     ]);
   };
 
+  /** 长按「我喜欢」：重新检测并更新歌单里每首歌的可播放状态 */
+  const onLongPressFav = () => {
+    if (!favs.length) {
+      AppAlert.alert('我喜欢', '还没有喜欢的歌曲');
+      return;
+    }
+    AppAlert.alert(`《我喜欢》${favs.length}首`, undefined, [
+      {text: '更新可播放状态', onPress: () => refreshFavStatus()},
+      {text: '取消', style: 'cancel'},
+    ], {
+      buttonLayout: 'vertical',
+    });
+  };
+
+  /** 重新解析"我喜欢"全部歌曲直链，刷新可播放状态：
+   * 无法解析的在线歌曲标灰（VIP/下架），恢复可播的取消灰显、本地歌曲不受影响。 */
+  const refreshFavStatus = async () => {
+    if (!isConnected()) {
+      AppAlert.alert('无法更新', '更新可播放状态需要联网');
+      return;
+    }
+    setImporting(true);
+    try {
+      const resolved = await resolveSongUrls(favs);
+      const next = await refreshFavPlayable(resolved.map(songKey));
+      setFavs(next);
+      const blocked = next.filter(s => s.unplayable).length;
+      AppAlert.alert(
+        '更新完成',
+        blocked > 0
+          ? `共 ${next.length} 首，其中 ${blocked} 首无法播放（需要VIP或已下架）已标灰`
+          : `共 ${next.length} 首，均可正常播放`,
+      );
+    } catch (e) {
+      AppAlert.alert('更新失败', '请检查网络后重试');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   /** 歌单 tab 行：我喜欢置顶 + 本地歌单 + 收藏的在线歌单 */
   type PlRow = {key: string; local?: LocalPlaylist; fav?: FavPlaylist};
   const plData: PlRow[] = [
@@ -514,7 +556,7 @@ export default function MineScreen({navigation, route}: any) {
                     navigation.navigate('PlaylistDetail', {id: pl.id})
                   }
                   onLongPress={
-                    isFavPl ? undefined : () => onLongPressPlaylist(pl)
+                    isFavPl ? () => onLongPressFav() : () => onLongPressPlaylist(pl)
                   }
                   delayLongPress={400}>
                   <View style={styles.plCover}>

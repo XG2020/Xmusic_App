@@ -3,6 +3,9 @@ import {ToastAndroid} from 'react-native';
 import RNFS from 'react-native-fs';
 import {addRecentSongs} from './store';
 import {getPreferredSongUrls} from './api';
+import {getPlayQuality, wifiOnlyEnabled} from './settings';
+import {isCellular, isConnected, onlinePlaybackBlockReason} from './network';
+import {cacheSongInBackground} from './songCache';
 import {
   saveQueueSnapshot,
   savePlayPosition,
@@ -13,9 +16,32 @@ import {
 import type {Song} from '../types/music';
 
 export default async function playbackService() {
-  TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
+  TrackPlayer.addEventListener(Event.RemotePlay, async () => {
+    // 通知栏续播：在线曲目遇无网/仅Wi-Fi 时硬拦截（后台无法弹窗，用 Toast 提示）
+    try {
+      const tr = (await TrackPlayer.getActiveTrack()) as any;
+      const u = String(tr?.url ?? '');
+      if (/^https?:/i.test(u) && u !== PENDING_URL) {
+        const reason = onlinePlaybackBlockReason();
+        if (reason) {
+          ToastAndroid.show(reason, ToastAndroid.SHORT);
+          return;
+        }
+      }
+    } catch (e) {
+      // 查询失败则照常续播
+    }
+    TrackPlayer.play();
+  });
 
-  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
+  TrackPlayer.addEventListener(Event.RemotePause, () => {
+    TrackPlayer.pause();
+  });
+
+  // 音频焦点打断（其他应用出声/系统抢焦点）由 RNTP 原生处理：
+  // 「允许与其他应用同时播放」关闭时（autoHandleInterruptions=true）被打断自动暂停、
+  // 临时打断结束后自动续播；开启时（autoHandleInterruptions=false）由 KotlinAudio 管理，
+  // 被其他应用抢焦点只压低音量(duck)而不暂停（别人出声我也不停），故无需在此自定义处理。
 
   // 通知栏下一曲走统一逻辑，随机模式下同样随机切
   TrackPlayer.addEventListener(Event.RemoteNext, () => skipToNext());
@@ -69,6 +95,29 @@ export default async function playbackService() {
       }
     }
     missingSkips = 0;
+    // 无网 / 仅Wi-Fi 蜂窝 下切到在线曲目：立即暂停并提示。
+    // 这是覆盖所有切歌路径（自动连播、通知栏下一曲、会话恢复等）的兜底硬拦截。
+    const isOnlineHttp = !isLocal && !!url && url !== PENDING_URL;
+    if (isOnlineHttp) {
+      const reason = onlinePlaybackBlockReason();
+      if (reason) {
+        TrackPlayer.pause().catch(() => {});
+        ToastAndroid.show(reason, ToastAndroid.SHORT);
+      }
+    }
+    // 在线曲目：后台整曲缓存（断网可回听已听部分、下次离线可播）。
+    // 为避免流量翻倍，仅在 Wi-Fi 下缓存；但「仅 Wi-Fi 联网」关闭时流量下也缓存不限制
+    if (
+      !isLocal &&
+      url &&
+      url !== PENDING_URL &&
+      tr.mid &&
+      (!isCellular() || !wifiOnlyEnabled())
+    ) {
+      getPlayQuality()
+        .then(q => cacheSongInBackground(String(tr.mid), q, url))
+        .catch(() => {});
+    }
     const song: Song = {
       mid: tr.mid,
       title: tr.title,
@@ -98,6 +147,13 @@ export default async function playbackService() {
           ToastAndroid.show('歌曲地址解析中，请稍候…', ToastAndroid.SHORT);
         }
         resolvePendingTrack(tr.pendingKey).catch(() => {});
+        return;
+      }
+      // 离线时不重解析：seek 到未缓冲区触发的播放失败若在此联网重取直链并 load()，
+      // 会重建音源、冲掉 ExoPlayer 已缓冲的音频，导致已缓存部分也无法继续播放。
+      // 保持当前音源不动，待恢复网络或用户重新播放即可（本地/已整曲缓存曲目为 file://，
+      // 不会走到这里，离线照常播放）。
+      if (!isConnected()) {
         return;
       }
       // 在线曲目直链失效（缓存/会话快照里的旧地址过期）：绕过缓存重取直链替换续播

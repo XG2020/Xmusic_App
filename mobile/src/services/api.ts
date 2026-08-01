@@ -6,9 +6,11 @@ import {
   cachedGet,
   cachePeekMany,
   cachePutMany,
+  cacheTouch,
   dropCache,
   clearApiCache,
 } from './cache';
+import {isFavPlaylist} from './store';
 import type {Playlist, Song} from '../types/music';
 
 const api = axios.create({
@@ -67,6 +69,9 @@ const TTL_SONG_URL = 60 * MIN;
 function httpsUrl(url?: string) {
   return url ? url.replace(/^http:\/\//i, 'https://') : undefined;
 }
+
+/** 简易延时（getSongUrls 空直链重试的退避用） */
+const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export async function search(keyword: string, type: 'song' | 'singer' | 'album' | 'playlist' = 'song', num = 20, page = 1) {
   return cachedGet(`search:${type}:${keyword}:${num}:${page}`, TTL_SEARCH, async () => {
@@ -190,6 +195,8 @@ export async function getPlaylistsByCategory(
  * 批量取播放直链，按 mid+音质粒度缓存（持久化，重启后仍有效）：
  * 重复播同一歌单/重启恢复队列时命中缓存直接用，只请求未命中的 mid。
  * force=true 绕过缓存全量重取（播放失败重解析时用）。
+ * 接口偶发对部分 mid 返回空直链（并非真的无版权/下架），会误判为「不可播放」导致
+ * 无法点击播放；对仍为空的 mid 有界重试几次（间隔递增），只接受非空直链。
  */
 export async function getSongUrls(
   mids: string[],
@@ -213,13 +220,35 @@ export async function getSongUrls(
       return result;
     }
   }
-  const {data} = await api.get('/api/song/url', {params: {mid: misses.join(','), quality}});
-  const freshMap = (data?.data ?? {}) as Record<string, string>;
+  // 对未命中的 mid 请求直链；首轮请求全部，之后只重试仍为空的 mid（最多 3 轮）。
+  const fresh: Record<string, string> = {};
+  let pending = misses;
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS && pending.length; attempt++) {
+    if (attempt > 0) {
+      // 递增退避：250ms、500ms，给服务端瞬时空返回一点恢复时间
+      await delay(attempt * 250);
+    }
+    try {
+      const {data} = await api.get('/api/song/url', {
+        params: {mid: pending.join(','), quality},
+      });
+      const map = (data?.data ?? {}) as Record<string, string>;
+      for (const mid of pending) {
+        if (map[mid]) {
+          fresh[mid] = map[mid];
+        }
+      }
+    } catch (e) {
+      // 本次请求失败：保留 pending，下一轮重试
+    }
+    pending = pending.filter(mid => !fresh[mid]);
+  }
   cachePutMany(
-    misses.filter(mid => freshMap[mid]).map(mid => [keyOf(mid), freshMap[mid]]),
+    Object.keys(fresh).map(mid => [keyOf(mid), fresh[mid]] as [string, string]),
     TTL_SONG_URL,
   );
-  return Object.assign(result, freshMap);
+  return Object.assign(result, fresh);
 }
 
 /** 按用户设置的播放音质批量取播放链接（服务端不可用时自动降级） */
@@ -340,18 +369,30 @@ export async function resolvePlaylistId(
 
 /** 歌单：兼容 QQ 原始结构（dirinfo/songlist）与文档结构（name/songs） */
 export async function getPlaylist(id: number): Promise<Playlist> {
-  // num 显式传大值：服务端默认只返回 100 首，导入大歌单会被截断
-  return cachedGet(`playlist:${id}:full`, TTL_PLAYLIST, async () => {
-    const {data} = await api.get('/api/playlist', {params: {id, num: 2000}});
-    const d = data?.data ?? {};
-    const rawSongs: any[] = d.songlist ?? d.songs ?? [];
-    return {
-      id: d.dirinfo?.id ?? d.id ?? id,
-      name: d.dirinfo?.title ?? d.name ?? '',
-      coverUrl: httpsUrl(d.dirinfo?.picurl),
-      songs: rawSongs.map(s => normalizeSong(s)),
-    } as Playlist;
-  });
+  // 收藏的歌单用 7 天长缓存（秒开、弱网可用），普通歌单 30 分钟；
+  // 「同步更新」走 getPlaylistFresh 绕过缓存拉最新
+  const faved = await isFavPlaylist(id).catch(() => false);
+  return cachedGet(
+    `playlist:${id}:full`,
+    faved ? TTL_DETAIL : TTL_PLAYLIST,
+    async () => {
+      // num 显式传大值：服务端默认只返回 100 首，导入大歌单会被截断
+      const {data} = await api.get('/api/playlist', {params: {id, num: 2000}});
+      const d = data?.data ?? {};
+      const rawSongs: any[] = d.songlist ?? d.songs ?? [];
+      return {
+        id: d.dirinfo?.id ?? d.id ?? id,
+        name: d.dirinfo?.title ?? d.name ?? '',
+        coverUrl: httpsUrl(d.dirinfo?.picurl),
+        songs: rawSongs.map(s => normalizeSong(s)),
+      } as Playlist;
+    },
+  );
+}
+
+/** 收藏歌单时调用：把已缓存的歌单内容续期为长缓存（无缓存时不做事） */
+export function pinPlaylistCache(id: number | string) {
+  cacheTouch(`playlist:${id}:full`, TTL_DETAIL);
 }
 
 /** 绕过缓存拉取最新歌单内容（收藏/导入歌单「同步更新」用） */

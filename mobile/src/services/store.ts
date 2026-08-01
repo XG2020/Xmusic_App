@@ -262,6 +262,32 @@ export async function markSongsUnplayable(plId: string, keys: string[]) {
   }
 }
 
+/**
+ * 重新检测后整体刷新"我喜欢"里每首歌的可播放状态：
+ * playableKeys 为能正常解析出直链（或本地文件）的歌曲 songKey 集合，
+ * 不在其中的在线歌曲标记为不可播放（灰显），在其中的清除标记（恢复可播）。
+ * 本地歌曲恒可播放，不受在线解析结果影响。返回更新后的列表。
+ */
+export async function refreshFavPlayable(
+  playableKeys: string[],
+): Promise<Song[]> {
+  const list = await readList(FAV_KEY);
+  const playable = new Set(playableKeys);
+  let changed = false;
+  const next = list.map(s => {
+    const shouldUnplayable = s.localPath ? false : !playable.has(songKey(s));
+    if (!!s.unplayable !== shouldUnplayable) {
+      changed = true;
+      return {...s, unplayable: shouldUnplayable || undefined};
+    }
+    return s;
+  });
+  if (changed) {
+    await AsyncStorage.setItem(FAV_KEY, JSON.stringify(next));
+  }
+  return next;
+}
+
 /** 从本地歌单移除歌曲，返回更新后的歌单 */
 export async function removeSongFromPlaylist(
   id: string,

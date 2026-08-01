@@ -25,7 +25,10 @@ type DialogRequest = {
   title: string;
   message?: string;
   buttons?: DialogButton[];
-  options?: {cancelable?: boolean};
+  options?: {
+    cancelable?: boolean;
+    buttonLayout?: 'auto' | 'vertical' | 'horizontal';
+  };
 };
 
 let pushRequest: ((r: DialogRequest) => void) | null = null;
@@ -35,7 +38,10 @@ export const AppAlert = {
     title: string,
     message?: string,
     buttons?: DialogButton[],
-    options?: {cancelable?: boolean},
+    options?: {
+      cancelable?: boolean;
+      buttonLayout?: 'auto' | 'vertical' | 'horizontal';
+    },
   ) {
     if (pushRequest) {
       pushRequest({title, message, buttons, options});
@@ -74,7 +80,9 @@ export function AppDialogHost() {
   const buttons: DialogButton[] = current.buttons?.length
     ? current.buttons
     : [{text: '确定'}];
-  const vertical = buttons.length > 2;
+  const vertical =
+    current.options?.buttonLayout === 'vertical' ||
+    (current.options?.buttonLayout !== 'horizontal' && buttons.length > 2);
   const cancelable = current.options?.cancelable !== false;
 
   const btnTextStyle = (b: DialogButton) => {

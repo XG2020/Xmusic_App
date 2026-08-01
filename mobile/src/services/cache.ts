@@ -58,6 +58,31 @@ export function dropCache(key: string) {
 }
 
 /**
+ * 给已有缓存条目续期（内存+持久化），无条目时不做任何事。
+ * 供「收藏歌单」等需要把短 TTL 缓存升级为长缓存的场景使用。
+ */
+export async function cacheTouch(key: string, ttlMs: number) {
+  const e = Date.now() + ttlMs;
+  const m = mem.get(key);
+  if (m) {
+    m.e = e;
+    AsyncStorage.setItem(PREFIX + key, JSON.stringify(m)).catch(() => {});
+    return;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(PREFIX + key);
+    if (raw) {
+      const ent = JSON.parse(raw) as Entry;
+      ent.e = e;
+      mem.set(key, ent);
+      AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
+    }
+  } catch (err) {
+    // 续期失败不影响功能，下次打开会重新拉取
+  }
+}
+
+/**
  * 批量读缓存（不触发请求）：返回命中的 key->值 映射，未命中/过期的不含在内。
  * 供按 mid 粒度缓存播放直链等「批量键」场景使用。
  */

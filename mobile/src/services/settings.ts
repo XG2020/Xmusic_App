@@ -317,6 +317,160 @@ export async function setCoverSpin(on: boolean) {
   await AsyncStorage.setItem(COVER_SPIN_KEY, on ? '1' : '0');
 }
 
+// ===== 流量播放提醒开关 =====
+
+const DATA_REMINDER_KEY = 'data_reminder';
+
+/** 内存缓存 + 订阅：点歌瞬间需同步判断是否弹流量提醒，设置页切换后立即生效，默认开启 */
+let dataReminderCache = true;
+const dataReminderListeners = new Set<(on: boolean) => void>();
+AsyncStorage.getItem(DATA_REMINDER_KEY)
+  .then(raw => {
+    dataReminderCache = raw !== '0';
+    dataReminderListeners.forEach(l => l(dataReminderCache));
+  })
+  .catch(() => {});
+
+/** 同步读取（播放前判断是否需要弹流量提醒） */
+export function dataReminderEnabled(): boolean {
+  return dataReminderCache;
+}
+
+/** 订阅开关变化，返回取消函数 */
+export function subscribeDataReminder(fn: (on: boolean) => void): () => void {
+  dataReminderListeners.add(fn);
+  return () => {
+    dataReminderListeners.delete(fn);
+  };
+}
+
+export async function getDataReminder(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(DATA_REMINDER_KEY);
+    dataReminderCache = raw !== '0';
+  } catch (e) {
+    // 读取失败沿用缓存值
+  }
+  return dataReminderCache;
+}
+
+export async function setDataReminder(on: boolean) {
+  dataReminderCache = on;
+  dataReminderListeners.forEach(l => l(on));
+  await AsyncStorage.setItem(DATA_REMINDER_KEY, on ? '1' : '0');
+}
+
+// ===== 边播边存开关 =====
+
+const CACHE_WHILE_PLAY_KEY = 'cache_while_play';
+
+/** 内存缓存 + 订阅：切歌瞬间需同步判断是否后台缓存，默认开启 */
+let cacheWhilePlayCache = true;
+const cacheWhilePlayListeners = new Set<(on: boolean) => void>();
+AsyncStorage.getItem(CACHE_WHILE_PLAY_KEY)
+  .then(raw => {
+    cacheWhilePlayCache = raw !== '0';
+    cacheWhilePlayListeners.forEach(l => l(cacheWhilePlayCache));
+  })
+  .catch(() => {});
+
+/** 同步读取（在线曲目开播时判断是否后台缓存整曲） */
+export function cacheWhilePlayEnabled(): boolean {
+  return cacheWhilePlayCache;
+}
+
+/** 订阅开关变化，返回取消函数 */
+export function subscribeCacheWhilePlay(fn: (on: boolean) => void): () => void {
+  cacheWhilePlayListeners.add(fn);
+  return () => {
+    cacheWhilePlayListeners.delete(fn);
+  };
+}
+
+export async function getCacheWhilePlay(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(CACHE_WHILE_PLAY_KEY);
+    cacheWhilePlayCache = raw !== '0';
+  } catch (e) {
+    // 读取失败沿用缓存值
+  }
+  return cacheWhilePlayCache;
+}
+
+export async function setCacheWhilePlay(on: boolean) {
+  cacheWhilePlayCache = on;
+  cacheWhilePlayListeners.forEach(l => l(on));
+  await AsyncStorage.setItem(CACHE_WHILE_PLAY_KEY, on ? '1' : '0');
+}
+
+// ===== 仅 Wi-Fi 联网开关 =====
+
+const WIFI_ONLY_KEY = 'wifi_only';
+
+/**
+ * 内存缓存：切歌瞬间需同步判断是否允许在蜂窝网络下后台缓存，默认关闭。
+ * 关闭时流量下也「边播边存」缓存歌曲不做限制；开启时仅在 Wi-Fi 下缓存。
+ */
+let wifiOnlyCache = false;
+AsyncStorage.getItem(WIFI_ONLY_KEY)
+  .then(raw => {
+    wifiOnlyCache = raw === '1';
+  })
+  .catch(() => {});
+
+/** 同步读取（后台缓存前判断当前网络是否允许） */
+export function wifiOnlyEnabled(): boolean {
+  return wifiOnlyCache;
+}
+
+export async function getWifiOnly(): Promise<boolean> {
+  try {
+    wifiOnlyCache = (await AsyncStorage.getItem(WIFI_ONLY_KEY)) === '1';
+  } catch (e) {
+    // 读取失败沿用缓存值
+  }
+  return wifiOnlyCache;
+}
+
+export async function setWifiOnly(on: boolean) {
+  wifiOnlyCache = on;
+  await AsyncStorage.setItem(WIFI_ONLY_KEY, on ? '1' : '0');
+}
+
+// ===== 允许与其他应用同时播放开关 =====
+
+const ALLOW_MIX_KEY = 'allow_mix';
+
+/**
+ * 内存缓存：音频焦点打断回调需同步判断，默认开启（混音，不因其他应用出声而暂停）。
+ * 关闭时其他应用出声则本软件暂停，对方结束（临时焦点归还）时本软件恢复续播。
+ */
+let allowMixCache = true;
+AsyncStorage.getItem(ALLOW_MIX_KEY)
+  .then(raw => {
+    allowMixCache = raw !== '0';
+  })
+  .catch(() => {});
+
+/** 同步读取（setupPlayer 据此决定 autoHandleInterruptions） */
+export function allowMixWithOthersEnabled(): boolean {
+  return allowMixCache;
+}
+
+export async function getAllowMix(): Promise<boolean> {
+  try {
+    allowMixCache = (await AsyncStorage.getItem(ALLOW_MIX_KEY)) !== '0';
+  } catch (e) {
+    // 读取失败沿用缓存值
+  }
+  return allowMixCache;
+}
+
+export async function setAllowMix(on: boolean) {
+  allowMixCache = on;
+  await AsyncStorage.setItem(ALLOW_MIX_KEY, on ? '1' : '0');
+}
+
 // ===== 开发者模式 =====
 
 const DEV_UNLOCKED_KEY = 'dev_unlocked';

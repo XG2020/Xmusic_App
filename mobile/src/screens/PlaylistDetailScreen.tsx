@@ -116,6 +116,8 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
   const styles = useMemo(() => createStyles(t), [t]);
   const [pl, setPl] = useState<LocalPlaylist | null>(null);
   const [starting, setStarting] = useState(false);
+  // 删除歌曲（移出歌单 / 取消喜欢，含批量）进行中：显示删除加载遮罩
+  const [deleting, setDeleting] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('default');
   const [sortAsc, setSortAsc] = useState(true);
@@ -219,20 +221,25 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
   /** 移出歌单（我喜欢 = 取消喜欢），本地文件可选一并删除 */
   const onRemove = (song: Song) => {
     const doRemove = async (alsoDeleteFile: boolean) => {
-      if (isFavPl) {
-        await toggleFav(song);
-      } else {
-        await removeSongFromPlaylist(plId, song);
-      }
-      if (alsoDeleteFile && song.localPath) {
-        try {
-          // 连同歌词/封面/元数据附件一起删除
-          await deleteLocalSongWithCompanions(song.localPath);
-        } catch (e) {
-          AppAlert.alert('文件删除失败', '已移出歌单，但文件可能已被移除或无权限');
+      setDeleting(true);
+      try {
+        if (isFavPl) {
+          await toggleFav(song);
+        } else {
+          await removeSongFromPlaylist(plId, song);
         }
+        if (alsoDeleteFile && song.localPath) {
+          try {
+            // 连同歌词/封面/元数据附件一起删除
+            await deleteLocalSongWithCompanions(song.localPath);
+          } catch (e) {
+            AppAlert.alert('文件删除失败', '已移出歌单，但文件可能已被移除或无权限');
+          }
+        }
+        await load();
+      } finally {
+        setDeleting(false);
       }
-      await load();
     };
     const buttons: any[] = [
       {text: '取消', style: 'cancel'},
@@ -432,15 +439,20 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
           text: '删除',
           style: 'destructive',
           onPress: async () => {
-            for (const s of selectedSongs) {
-              if (isFavPl) {
-                await toggleFav(s);
-              } else {
-                await removeSongFromPlaylist(plId, s);
+            setDeleting(true);
+            try {
+              for (const s of selectedSongs) {
+                if (isFavPl) {
+                  await toggleFav(s);
+                } else {
+                  await removeSongFromPlaylist(plId, s);
+                }
               }
+              exitMulti();
+              await load();
+            } finally {
+              setDeleting(false);
             }
-            exitMulti();
-            await load();
           },
         },
       ],
@@ -663,6 +675,15 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
         <View style={styles.mask}>
           <ActivityIndicator color={t.primary} size="large" />
           <Text style={styles.maskText}>正在加载…</Text>
+        </View>
+      )}
+
+      {deleting && (
+        <View style={styles.mask}>
+          <ActivityIndicator color={t.primary} size="large" />
+          <Text style={styles.maskText}>
+            {isFavPl ? '正在取消喜欢…' : '正在删除…'}
+          </Text>
         </View>
       )}
     </SafeAreaView>

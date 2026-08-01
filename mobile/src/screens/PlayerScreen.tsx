@@ -12,11 +12,13 @@ import {
   LayoutChangeEvent,
   GestureResponderEvent,
   PanResponder,
+  ToastAndroid,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import TrackPlayer, {
   State,
+  Track,
   useActiveTrack,
   usePlaybackState,
   useProgress,
@@ -37,9 +39,15 @@ import {
   getPlayMode,
   seekTo,
   setPlayMode,
-  skipToNext,
-  skipToPrevious,
+  skipToNextUser,
+  skipToPreviousUser,
+  resumeUser,
+  getPendingRestoreProgress,
+  getPendingRestoreTrack,
+  subscribePendingRestore,
 } from '../services/player';
+import {cacheProgressOf, subscribeCacheProgress} from '../services/songCache';
+import {isConnected, subscribeNetwork} from '../services/network';
 import {isFav, toggleFav} from '../services/store';
 import {useSkin} from '../services/skin';
 import Icon, {IconName} from '../components/Icon';
@@ -83,17 +91,43 @@ const LyricPage = React.memo(LyricView);
 const ProgressSection = React.memo(function ProgressSection({
   styles,
   lockPager,
+  songMid,
+  isLocal,
+  fallbackPosition = 0,
+  fallbackDuration = 0,
 }: {
   styles: ReturnType<typeof createStyles>;
   lockPager: (locked: boolean) => void;
+  songMid?: string;
+  isLocal: boolean;
+  fallbackPosition?: number;
+  fallbackDuration?: number;
 }) {
   const progress = useProgress(500);
+  const effectiveDuration = progress.duration || fallbackDuration;
+  const effectivePosition =
+    progress.duration > 0 || progress.position > 0
+      ? progress.position
+      : fallbackPosition;
+  // 订阅整曲下载进度：缓存条显示「实际能播到哪」，下载推进时刷新本组件
+  const [, bumpCache] = useState(0);
+  useEffect(() => subscribeCacheProgress(() => bumpCache(x => x + 1)), []);
+  // 订阅联网状态：离线时限制只能拖到「已缓存/可离线播放」的区域
+  const [connected, setConnected] = useState(isConnected());
+  useEffect(() => subscribeNetwork((_t, c) => setConnected(c)), []);
   // 进度条拖动：拖动中的临时比例（null = 未拖动，显示真实进度）
   const [dragPct, setDragPct] = useState<number | null>(null);
   const barWidthRef = useRef(0);
   const dragStartX = useRef(0);
   const durationRef = useRef(0);
-  durationRef.current = progress.duration;
+  durationRef.current = effectiveDuration;
+  // 供拖动松手回调读取最新值（PanResponder 闭包仅在创建时捕获一次）
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
+  // 整首是否已可离线播放（本地/已整曲缓存）：拖动不受限、且不显示缓存条
+  const fullyCachedRef = useRef(false);
+  // 离线时「可连续播放到的秒数上限」：拖过此处则定位后暂停
+  const playableEndRef = useRef(0);
 
   const clampRatio = (x: number) =>
     Math.min(Math.max(barWidthRef.current ? x / barWidthRef.current : 0, 0), 1);
@@ -116,8 +150,22 @@ const ProgressSection = React.memo(function ProgressSection({
       onPanResponderRelease: (_e, g) => {
         lockPager(false);
         const ratio = clampRatio(dragStartX.current + g.dx);
-        if (durationRef.current) {
-          seekTo(ratio * durationRef.current);
+        const dur = durationRef.current;
+        if (dur) {
+          const target = ratio * dur;
+          // 离线 + 在线曲目：拖到尚未缓冲(不可离线播放)的区域会让 ExoPlayer 重新
+          // 联网打开数据源，离线必然失败并触发 PlaybackError，反而冲掉已缓冲的音频、
+          // 导致这首歌连已听区段都无法继续播放。此时「不 seek」，仅提示，让播放停留在
+          // 已缓冲区域（本地/已整曲缓存的歌曲不受限，可任意拖动）。
+          if (
+            !connectedRef.current &&
+            !fullyCachedRef.current &&
+            target > playableEndRef.current + 2
+          ) {
+            ToastAndroid.show('该位置尚未缓存，无法离线播放', ToastAndroid.SHORT);
+          } else {
+            seekTo(target);
+          }
         }
         // 稍延迟恢复真实进度，避免 seek 生效前圆点瞬间跳回
         setTimeout(() => setDragPct(null), 400);
@@ -129,19 +177,43 @@ const ProgressSection = React.memo(function ProgressSection({
     }),
   ).current;
 
-  const livePct = progress.duration
-    ? (progress.position / progress.duration) * 100
+  const livePct = effectiveDuration
+    ? (effectivePosition / effectiveDuration) * 100
     : 0;
   // 拖动中优先显示手指位置
   const pct = dragPct !== null ? dragPct * 100 : livePct;
+  // 整首是否已可离线播放：本地文件(file://) 或 本次已整曲缓存(下载比例≥1)。
+  // 掉线瞬间 network.ts 会把已整曲缓存的在线曲目切到本地，二者等价。
+  const dlRatio = cacheProgressOf(songMid);
+  const fullyCached = isLocal || dlRatio >= 1;
+  fullyCachedRef.current = fullyCached;
+  const bufferedRatio = effectiveDuration
+    ? progress.buffered / effectiveDuration
+    : 0;
+  // 缓存条仅表示「整曲缓存进度」：
+  //   在线联网 → 只显示后台整曲下载比例，不再把播放器 buffered 当成缓存显示
+  //   在线离线 → 回退显示 ExoPlayer 实际缓冲到的位置（= 当前还能连续播放到哪）
+  //   整首已缓存 → 整首可播，不显示缓存条
+  const cacheRatio = fullyCached
+    ? 1
+    : !connected
+    ? bufferedRatio
+    : dlRatio;
+  const bufferedPct = Math.min(Math.max(cacheRatio, 0), 1) * 100;
+  // 在线歌曲缓存完成后仍显示满条；纯本地歌曲没有「缓存中/已缓存」语义，保持不显示
+  const showBufferedBar = bufferedPct > 0 && (!!songMid || !isLocal);
+  // 离线可连续播放到的秒数（整首已缓存不受限；在线离线以实际缓冲为界）
+  playableEndRef.current = fullyCached
+    ? durationRef.current
+    : bufferedRatio * durationRef.current;
 
   return (
     <View style={styles.progress}>
       <Text style={styles.time}>
         {formatDuration(
-          dragPct !== null && progress.duration
-            ? dragPct * progress.duration
-            : progress.position,
+          dragPct !== null && effectiveDuration
+            ? dragPct * effectiveDuration
+            : effectivePosition,
         )}
       </Text>
       <View
@@ -151,11 +223,15 @@ const ProgressSection = React.memo(function ProgressSection({
         }}
         {...barResponder.panHandlers}>
         <View style={styles.bar}>
+          {/* 缓存进度：恢复为原来叠在播放进度下方的样式 */}
+          {showBufferedBar && (
+            <View style={[styles.barBuffered, {width: `${bufferedPct}%`}]} />
+          )}
           <View style={[styles.barFill, {width: `${pct}%`}]} />
           <View style={[styles.barDot, {left: `${pct}%`}]} />
         </View>
       </View>
-      <Text style={styles.time}>{formatDuration(progress.duration)}</Text>
+      <Text style={styles.time}>{formatDuration(effectiveDuration)}</Text>
     </View>
   );
 });
@@ -166,7 +242,25 @@ export default function PlayerScreen({navigation}: any) {
   // 皮肤：有自定义播放页背景图时铺满整屏，容器随之透明
   const skin = useSkin();
   const playback = usePlaybackState();
-  const track = useActiveTrack();
+  const nativeTrack = useActiveTrack();
+  // 延迟恢复：原生队列为空时回退显示上次会话快照的当前曲目（仅只读展示，不抢音频焦点）。
+  // 播放/切歌控件走 resumeUser / skipToXxxUser，仅在「真正播放」时才 materialize 抢焦点，
+  // 因此进入播放页「查看」不会打断其他应用，符合「只有点播放才获取焦点」的预期。
+  const [pendingTrack, setPendingTrack] = useState<Track | null>(() =>
+    getPendingRestoreTrack(),
+  );
+  const [pendingProgress, setPendingProgress] = useState(() =>
+    getPendingRestoreProgress(),
+  );
+  useEffect(
+    () =>
+      subscribePendingRestore(() => {
+        setPendingTrack(getPendingRestoreTrack());
+        setPendingProgress(getPendingRestoreProgress());
+      }),
+    [],
+  );
+  const track = nativeTrack ?? pendingTrack;
   // 播放模式取全局持久化状态，切换播放列表/重进播放页不重置
   const [mode, setMode] = useState<PlayMode>(getPlayMode());
   const [fav, setFav] = useState(false);
@@ -499,21 +593,30 @@ export default function PlayerScreen({navigation}: any) {
             </View>
 
             {/* 进度条（可点击/拖动定位），独立订阅进度避免整页高频重渲 */}
-            <ProgressSection styles={styles} lockPager={lockPager} />
+            <ProgressSection
+              styles={styles}
+              lockPager={lockPager}
+              songMid={track?.mid ? String(track.mid) : undefined}
+              isLocal={
+                !!track?.url && !/^https?:/i.test(String(track.url))
+              }
+              fallbackPosition={!nativeTrack ? pendingProgress.position : 0}
+              fallbackDuration={!nativeTrack ? pendingProgress.duration : 0}
+            />
 
             {/* 播放控制 */}
             <View style={styles.controls}>
               <TouchableOpacity onPress={cycleMode}>
                 <Icon name={MODE_ICON[mode]} size={45} color={t.playerSub} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => skipToPrevious()}>
+              <TouchableOpacity onPress={() => skipToPreviousUser()}>
                 <Icon name="prev" size={30} color={t.playerText} />
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.playBtn}
-                onPress={() =>
-                  playing ? TrackPlayer.pause() : TrackPlayer.play()
-                }>
+                onPress={() => {
+                  playing ? TrackPlayer.pause() : resumeUser();
+                }}>
                 <Icon
                   name={playing ? 'pause' : 'play'}
                   size={26}
@@ -521,7 +624,7 @@ export default function PlayerScreen({navigation}: any) {
                   style={playing ? undefined : styles.playIconShift}
                 />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => skipToNext(mode)}>
+              <TouchableOpacity onPress={() => skipToNextUser(mode)}>
                 <Icon name="next" size={30} color={t.playerText} />
               </TouchableOpacity>
               <TouchableOpacity
@@ -729,6 +832,17 @@ const createStyles = (t: Theme) =>
       backgroundColor: t.isDark
         ? 'rgba(255,255,255,0.2)'
         : 'rgba(31,42,56,0.15)',
+      borderRadius: 2,
+    },
+    // 缓存进度条：恢复为叠在播放进度条下方的原样式
+    barBuffered: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      height: 3,
+      backgroundColor: t.isDark
+        ? 'rgba(255,255,255,0.35)'
+        : 'rgba(31,42,56,0.28)',
       borderRadius: 2,
     },
     barFill: {

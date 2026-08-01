@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import {getPlaylist, getPreferredSongUrls, resolvePlaylistId} from '../services/api';
+import {getPlaylist, getPreferredSongUrls, pinPlaylistCache, resolvePlaylistId} from '../services/api';
 import type {Song} from '../types/music';
 import {playSongs} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
@@ -97,6 +97,10 @@ export default function PlaylistScreen({navigation, route}: any) {
       coverUrl: coverUrl ?? songs[0]?.coverUrl,
       songCount: songs.length,
     });
+    if (next) {
+      // 收藏即把当前歌单内容缓存续期为长缓存，下次进入秒开
+      pinPlaylistCache(resolvedId);
+    }
     setFaved(next);
   };
 

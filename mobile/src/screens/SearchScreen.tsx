@@ -16,6 +16,7 @@ import {
   searchPlaylists,
   getPreferredSongUrls,
   albumCoverUrl,
+  pinPlaylistCache,
   PlaylistInfo,
 } from '../services/api';
 import type {Song} from '../types/music';
@@ -301,14 +302,18 @@ export default function SearchScreen({navigation, route}: any) {
       </View>
       <TouchableOpacity
         style={styles.plFavBtn}
-        onPress={() =>
-          toggleFavPlaylist({
+        onPress={async () => {
+          const next = await toggleFavPlaylist({
             id: item.dissid,
             name: item.title,
             coverUrl: item.coverUrl,
             songCount: item.songCount,
-          })
-        }
+          });
+          if (next) {
+            // 若之前打开过该歌单，把已有内容缓存续期为长缓存
+            pinPlaylistCache(item.dissid);
+          }
+        }}
         hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
         <Icon
           name={favIds.has(String(item.dissid)) ? 'favOn' : 'favOff'}
