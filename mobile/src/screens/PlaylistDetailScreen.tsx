@@ -31,6 +31,7 @@ import {playSongsProgressive} from '../services/player';
 import {autoOpenPlayerEnabled} from '../services/settings';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
+import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 import type {Song} from '../types/music';
 
@@ -56,41 +57,45 @@ type RowProps = {
 
 const SongRow = React.memo(
   ({item, index, multiMode, checked, styles, onPress, onLongPress, onMore}: RowProps) => (
-    <TouchableOpacity
-      style={styles.item}
-      onPress={() => onPress(item, index)}
-      onLongPress={multiMode ? undefined : () => onLongPress(item)}
-      delayLongPress={400}>
-      {multiMode && (
-        <View style={[styles.checkbox, checked && styles.checkboxOn]}>
-          {checked && <Text style={styles.checkboxTick}>✓</Text>}
-        </View>
-      )}
-      <View style={styles.itemInfo}>
-        <Text
-          style={[styles.title, item.unplayable && styles.titleOff]}
-          numberOfLines={1}>
-          {item.title}
-        </Text>
-        <View style={styles.subRow}>
-          {!!item.localPath && (
-            <View style={styles.tag}>
-              <Text style={styles.tagText}>本地</Text>
-            </View>
-          )}
-          {!!item.unplayable && (
-            <View style={styles.tagOff}>
-              <Text style={styles.tagOffText}>不可播放</Text>
-            </View>
-          )}
+    <View style={styles.item}>
+      {/* 主点击区与右侧「⋮」拆成兄弟节点，避免点按钮时误触发行点击 */}
+      <TouchableOpacity
+        style={styles.itemMain}
+        activeOpacity={0.7}
+        onPress={() => onPress(item, index)}
+        onLongPress={multiMode ? undefined : () => onLongPress(item)}
+        delayLongPress={400}>
+        {multiMode && (
+          <View style={[styles.checkbox, checked && styles.checkboxOn]}>
+            {checked && <Text style={styles.checkboxTick}>✓</Text>}
+          </View>
+        )}
+        <View style={styles.itemInfo}>
           <Text
-            style={[styles.sub, item.unplayable && styles.titleOff]}
+            style={[styles.title, item.unplayable && styles.titleOff]}
             numberOfLines={1}>
-            {singerText(item)}
-            {item.album?.name ? ` · ${item.album.name}` : ''}
+            {item.title}
           </Text>
+          <View style={styles.subRow}>
+            {!!item.localPath && (
+              <View style={styles.tag}>
+                <Text style={styles.tagText}>本地</Text>
+              </View>
+            )}
+            {!!item.unplayable && (
+              <View style={styles.tagOff}>
+                <Text style={styles.tagOffText}>不可播放</Text>
+              </View>
+            )}
+            <Text
+              style={[styles.sub, item.unplayable && styles.titleOff]}
+              numberOfLines={1}>
+              {singerText(item)}
+              {item.album?.name ? ` · ${item.album.name}` : ''}
+            </Text>
+          </View>
         </View>
-      </View>
+      </TouchableOpacity>
       {!multiMode && (
         <TouchableOpacity
           style={styles.moreBtn}
@@ -99,7 +104,7 @@ const SongRow = React.memo(
           <Icon name="more" size={16} style={styles.moreIcon} />
         </TouchableOpacity>
       )}
-    </TouchableOpacity>
+    </View>
   ),
 );
 
@@ -113,6 +118,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
   const plId: string = route.params?.id;
   const isFavPl = plId === FAV_PLAYLIST_ID;
   const {t} = useTheme();
+  const skin = useSkin();
   const styles = useMemo(() => createStyles(t), [t]);
   const [pl, setPl] = useState<LocalPlaylist | null>(null);
   const [starting, setStarting] = useState(false);
@@ -248,7 +254,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
         onPress: () => doRemove(false),
       },
     ];
-    if (song.localPath) {
+    if (song.localPath && !song.localPath.startsWith('content://')) {
       buttons.push({
         text: '移出并删除本地文件',
         style: 'destructive',
@@ -313,9 +319,9 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
         ok += 1;
       }
     }
-    AppAlert.alert(
-      '已加入下载队列',
-      `共 ${ok} 首，进度可在「下载管理」中查看`,
+    ToastAndroid.show(
+      `共 ${ok} 首已加入下载队列，进度可在下载管理中查看`,
+      ToastAndroid.SHORT,
     );
   };
 
@@ -460,7 +466,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={[styles.container, !!skin.bg && styles.transparentBg]} edges={['top']}>
       {multiMode ? (
         // 多选模式顶栏：全选 | 已选定N首 | 完成
         <View style={styles.header}>
@@ -693,6 +699,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    transparentBg: {backgroundColor: 'transparent'},
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -766,6 +773,8 @@ const createStyles = (t: Theme) =>
       paddingLeft: 16,
       paddingRight: 6,
     },
+    // 行主点击区（占满左侧空间，与右侧按钮兄弟布局）
+    itemMain: {flex: 1, flexDirection: 'row', alignItems: 'center'},
     itemInfo: {flex: 1},
     title: {fontSize: 16, color: t.text},
     subRow: {
@@ -781,7 +790,7 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 3,
       paddingVertical: 0.5,
     },
-    tagText: {fontSize: 9, color: t.primary},
+    tagText: {fontSize: 11, color: t.primary},
     sub: {flex: 1, fontSize: 12, color: t.sub},
     titleOff: {color: t.sub, opacity: 0.45},
     tagOff: {
@@ -790,9 +799,8 @@ const createStyles = (t: Theme) =>
       borderRadius: 3,
       paddingHorizontal: 3,
       paddingVertical: 0.5,
-      opacity: 0.6,
     },
-    tagOffText: {fontSize: 9, color: t.sub},
+    tagOffText: {fontSize: 11, color: t.sub},
     moreBtn: {paddingHorizontal: 12, paddingVertical: 6},
     moreIcon: {tintColor: t.sub},
     // 批量底栏
@@ -800,7 +808,8 @@ const createStyles = (t: Theme) =>
       flexDirection: 'row',
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: t.border,
-      backgroundColor: t.card,
+      // 底栏：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       paddingVertical: 8,
       paddingBottom: 14,
     },
@@ -817,7 +826,8 @@ const createStyles = (t: Theme) =>
       justifyContent: 'flex-end',
     },
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,

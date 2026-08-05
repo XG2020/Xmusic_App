@@ -32,18 +32,26 @@ export function parseLrc(lrc: string): LrcLine[] {
 }
 
 /**
- * 找到当前播放进度对应的歌词行下标
+ * 找到当前播放进度对应的歌词行下标（二分查找，空数组安全）
  */
 export function findActiveLine(lines: LrcLine[], position: number): number {
-  let active = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].time <= position + 0.2) {
-      active = i;
+  if (!lines.length) {
+    return -1;
+  }
+  const target = position + 0.2;
+  let lo = 0;
+  let hi = lines.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].time <= target) {
+      ans = mid;
+      lo = mid + 1;
     } else {
-      break;
+      hi = mid - 1;
     }
   }
-  return active;
+  return ans;
 }
 
 /** QRC 逐字歌词：单个字/词的演唱起止时间（秒） */

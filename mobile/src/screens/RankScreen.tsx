@@ -8,10 +8,6 @@ import {
   Image,
   StyleSheet,
   ActivityIndicator,
-  LayoutAnimation,
-  Platform,
-  UIManager,
-  Dimensions,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -37,14 +33,6 @@ const FALLBACK_RANKS: RankInfo[] = [
   {topId: 4, title: '流行指数榜'},
   {topId: 62, title: '飙升榜'},
 ];
-
-// Android 旧架构下 LayoutAnimation 需显式开启（榜单选择区展开/收起过渡）
-if (
-  Platform.OS === 'android' &&
-  UIManager.setLayoutAnimationEnabledExperimental
-) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 /**
  * 榜单歌曲只有 songId，播放前需要换取 mid 再取播放地址。
@@ -83,12 +71,8 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
-  // 榜单选择区展开态：收起=单行横滑，展开=换行网格全量显示
+  // 榜单分类：收起时横滑胶囊，展开时显示完整网格
   const [chipsExpanded, setChipsExpanded] = useState(false);
-  const toggleChips = (expanded: boolean) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setChipsExpanded(expanded);
-  };
 
   useEffect(() => {
     getTopGroups()
@@ -121,6 +105,14 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   useEffect(() => {
     load(rankId);
   }, [rankId, load]);
+
+  const pickRank = (nextRankId: number) => {
+    setChipsExpanded(false);
+    if (nextRankId === rankId) {
+      return;
+    }
+    setRankId(nextRankId);
+  };
 
   const playAt = async (index: number) => {
     if (starting) {
@@ -161,8 +153,8 @@ export default function RankScreen({navigation, route, lockPager}: any) {
 
   return (
     <SafeAreaView
-          style={[styles.container, !standalone && !!skin.bg && styles.transparentBg]}
-          edges={['top']}>
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
       <View style={styles.titleRow}>
         {standalone && (
           <TouchableOpacity
@@ -173,48 +165,51 @@ export default function RankScreen({navigation, route, lockPager}: any) {
         )}
         <Text style={styles.pageTitle}>排行榜</Text>
       </View>
-      {/* 榜单切换：收起时单行横滑（触摸锁住主页 pager），
-          点击右侧箭头展开为换行网格，选中榜单后自动收起 */}
-      <View style={styles.chipsRow}>
-        {chipsExpanded ? (
-          <ScrollView
-            style={styles.chipsExpandScroll}
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled>
-            <View style={styles.chipsWrap}>
-              {ranks.map(r => (
-                <TouchableOpacity
-                  key={r.topId}
-                  style={[styles.chip, rankId === r.topId && styles.chipActive]}
-                  onPress={() => {
-                    setRankId(r.topId);
-                    toggleChips(false);
-                  }}>
-                  <Text
-                    style={[
-                      styles.chipText,
-                      rankId === r.topId && styles.chipTextActive,
-                    ]}>
-                    {r.title}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </ScrollView>
-        ) : (
-          <ScrollView
-            horizontal
-            style={styles.chipsScroll}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.chips}
-            onTouchStart={() => lockPager?.(true)}
-            onTouchEnd={() => lockPager?.(false)}
-            onTouchCancel={() => lockPager?.(false)}>
+      {/* 分类栏：对齐歌单页逻辑，横滑胶囊 + 右侧展开按钮 */}
+      <View style={styles.chipsBar}>
+        <ScrollView
+          horizontal
+          style={styles.chipsScroll}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chips}
+          onTouchStart={() => lockPager?.(true)}
+          onTouchEnd={() => lockPager?.(false)}
+          onTouchCancel={() => lockPager?.(false)}>
+          {ranks.map(r => (
+            <TouchableOpacity
+              key={r.topId}
+              style={[styles.chip, rankId === r.topId && styles.chipActive]}
+              onPress={() => pickRank(r.topId)}>
+              <Text
+                style={[
+                  styles.chipText,
+                  rankId === r.topId && styles.chipTextActive,
+                ]}>
+                {r.title}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+        <TouchableOpacity
+          style={styles.expandBtn}
+          onPress={() => setChipsExpanded(v => !v)}
+          hitSlop={{top: 8, bottom: 8, left: 4, right: 4}}>
+          <Text style={styles.expandText}>{chipsExpanded ? '收起' : '分类'}</Text>
+          <Text style={styles.expandArrow}>{chipsExpanded ? '▲' : '▼'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {chipsExpanded ? (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.expandPanel}>
+          <Text style={styles.sectionTitle}>全部排行榜</Text>
+          <View style={styles.chipsWrap}>
             {ranks.map(r => (
               <TouchableOpacity
                 key={r.topId}
                 style={[styles.chip, rankId === r.topId && styles.chipActive]}
-                onPress={() => setRankId(r.topId)}>
+                onPress={() => pickRank(r.topId)}>
                 <Text
                   style={[
                     styles.chipText,
@@ -224,74 +219,81 @@ export default function RankScreen({navigation, route, lockPager}: any) {
                 </Text>
               </TouchableOpacity>
             ))}
-          </ScrollView>
-        )}
-        <TouchableOpacity
-          style={styles.expandBtn}
-          onPress={() => toggleChips(!chipsExpanded)}
-          hitSlop={{top: 8, bottom: 8, left: 4, right: 8}}>
-          <Text style={styles.expandArrow}>{chipsExpanded ? '▴' : '▾'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* 播放全部 */}
-      {!loading && songs.length > 0 && (
-        <TouchableOpacity style={styles.playAllRow} onPress={playAll}>
-          <Icon name="play" size={18} color={t.primary} />
-          <Text style={styles.playAllText}>播放全部</Text>
-          <Text style={styles.playAllCount}>（{songs.length}首）</Text>
-        </TouchableOpacity>
-      )}
-
-      {loading ? (
-        <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
+          </View>
+          <View style={styles.bottomSpace} />
+        </ScrollView>
       ) : (
-        <FlatList
-          showsVerticalScrollIndicator={false}
-          data={songs}
-          keyExtractor={(item, i) => String(item.id ?? `${item.title}-${i}`)}
-          initialNumToRender={12}
-          maxToRenderPerBatch={16}
-          windowSize={9}
-          removeClippedSubviews
-          ListEmptyComponent={
-            <Text style={styles.empty}>榜单加载失败，下拉重试</Text>
-          }
-          refreshing={loading}
-          onRefresh={() => load(rankId)}
-          renderItem={({item, index}) => (
-            <TouchableOpacity style={styles.item} onPress={() => playAt(index)}>
-              <Text style={[styles.rankNo, index < 3 && styles.rankNoTop]}>
-                {index + 1}
-              </Text>
-              {item.coverUrl ? (
-                <Image
-                  source={{uri: item.coverUrl}}
-                  style={styles.cover}
-                  resizeMethod="resize"
-                />
-              ) : (
-                <View style={[styles.cover, styles.coverFallback]}>
-                  <Text style={styles.coverFallbackText}>♪</Text>
-                </View>
-              )}
-              <View style={styles.itemInfo}>
-                <Text style={styles.title} numberOfLines={1}>
-                  {item.title}
-                </Text>
-                <Text style={styles.sub} numberOfLines={1}>
-                  {item.singer?.map(s => s.name).join(' / ')}
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.moreBtn}
-                onPress={() => openActions(item)}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-                <Icon name="more" size={16} style={styles.moreIcon} />
-              </TouchableOpacity>
+        <>
+          {/* 播放全部 */}
+          {!loading && songs.length > 0 && (
+            <TouchableOpacity style={styles.playAllRow} onPress={playAll}>
+              <Icon name="play" size={18} color={t.primary} />
+              <Text style={styles.playAllText}>播放全部</Text>
+              <Text style={styles.playAllCount}>（{songs.length}首）</Text>
             </TouchableOpacity>
           )}
-        />
+
+          {loading ? (
+            <ActivityIndicator
+              style={styles.loading}
+              color={t.primary}
+              size="large"
+            />
+          ) : (
+            <FlatList
+              showsVerticalScrollIndicator={false}
+              data={songs}
+              keyExtractor={(item, i) => String(item.id ?? `${item.title}-${i}`)}
+              initialNumToRender={12}
+              maxToRenderPerBatch={16}
+              windowSize={9}
+              removeClippedSubviews
+              ListEmptyComponent={
+                <Text style={styles.empty}>榜单加载失败，下拉重试</Text>
+              }
+              refreshing={loading}
+              onRefresh={() => load(rankId)}
+              renderItem={({item, index}) => (
+                <View style={styles.item}>
+                  {/* 主点击区与右侧「⋮」拆成兄弟节点，避免点按钮时误触发行点击 */}
+                  <TouchableOpacity
+                    style={styles.itemMain}
+                    activeOpacity={0.7}
+                    onPress={() => playAt(index)}>
+                    <Text style={[styles.rankNo, index < 3 && styles.rankNoTop]}>
+                      {index + 1}
+                    </Text>
+                    {item.coverUrl ? (
+                      <Image
+                        source={{uri: item.coverUrl}}
+                        style={styles.cover}
+                        resizeMethod="resize"
+                      />
+                    ) : (
+                      <View style={[styles.cover, styles.coverFallback]}>
+                        <Text style={styles.coverFallbackText}>♪</Text>
+                      </View>
+                    )}
+                    <View style={styles.itemInfo}>
+                      <Text style={styles.title} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text style={styles.sub} numberOfLines={1}>
+                        {item.singer?.map(s => s.name).join(' / ')}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.moreBtn}
+                    onPress={() => openActions(item)}
+                    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                    <Icon name="more" size={16} style={styles.moreIcon} />
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
+          )}
+        </>
       )}
 
       <SongActionSheet song={actionSong} onClose={() => setActionSong(null)} />
@@ -309,7 +311,7 @@ export default function RankScreen({navigation, route, lockPager}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
-        transparentBg: {backgroundColor: 'transparent'},
+    transparentBg: {backgroundColor: 'transparent'},
     titleRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -323,37 +325,43 @@ const createStyles = (t: Theme) =>
       fontWeight: '800',
       color: t.text,
     },
-    chipsRow: {flexDirection: 'row', alignItems: 'flex-start'},
-    chipsScroll: {flex: 1},
-    chips: {flexDirection: 'row', gap: 10, padding: 12},
-    // 展开态：榜单多时限高可竖滑，避免把下方歌曲列表挤出屏幕
-    chipsExpandScroll: {
-      flex: 1,
-      maxHeight: Dimensions.get('window').height * 0.4,
+    chipsBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingRight: 10,
+      marginTop: 4,
     },
-    // 展开态：换行网格（与收起态同样的边距与间隔）
+    chipsScroll: {flex: 1},
+    chips: {paddingHorizontal: 12, gap: 8, alignItems: 'center'},
+    expandPanel: {paddingBottom: 12},
+    sectionTitle: {
+      fontSize: 17,
+      fontWeight: '700',
+      color: t.text,
+      marginHorizontal: 16,
+      marginTop: 14,
+      marginBottom: 10,
+    },
     chipsWrap: {
       flexDirection: 'row',
       flexWrap: 'wrap',
-      gap: 10,
-      padding: 12,
+      gap: 8,
+      paddingHorizontal: 12,
     },
     expandBtn: {
-      paddingLeft: 10,
-      paddingRight: 16,
-      paddingVertical: 12,
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
-      // 与 chip 行高对齐（chip paddingVertical 7 + 字号 13）
-      height: 44,
-      minWidth: 48,
+      gap: 3,
+      paddingLeft: 8,
     },
-    expandArrow: {fontSize: 22, color: t.sub, lineHeight: 24},
+    expandText: {fontSize: 13, color: t.sub},
+    expandArrow: {fontSize: 8, color: t.sub},
     chip: {
-      paddingHorizontal: 16,
-      paddingVertical: 7,
-      borderRadius: 16,
-      backgroundColor: t.card,
+      paddingHorizontal: 13,
+      paddingVertical: 6,
+      borderRadius: 15,
+      // 分类胶囊：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
     },
     chipActive: {backgroundColor: t.primary},
     chipText: {fontSize: 13, color: t.sub},
@@ -376,6 +384,8 @@ const createStyles = (t: Theme) =>
       paddingLeft: 16,
       paddingRight: 4,
     },
+    // 行主点击区（占满左侧空间，与右侧按钮兄弟布局）
+    itemMain: {flex: 1, flexDirection: 'row', alignItems: 'center'},
     rankNo: {width: 30, fontSize: 16, fontWeight: '700', color: t.sub},
     rankNoTop: {color: '#FF4D4F'},
     cover: {width: 46, height: 46, borderRadius: 8},
@@ -388,9 +398,9 @@ const createStyles = (t: Theme) =>
     itemInfo: {flex: 1, marginHorizontal: 10},
     title: {fontSize: 15, fontWeight: '600', color: t.text},
     sub: {fontSize: 12, color: t.sub, marginTop: 3},
-    playIcon: {color: t.primary, fontSize: 14, paddingHorizontal: 6},
     moreBtn: {paddingHorizontal: 12, paddingVertical: 6},
     moreIcon: {tintColor: t.sub},
+    bottomSpace: {height: 24},
     mask: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: t.mask,

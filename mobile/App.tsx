@@ -13,11 +13,23 @@ import Splash from './src/components/Splash';
 import {setupPlayer, restoreLastSession} from './src/services/player';
 import {enforceCacheLimit} from './src/services/cacheManager';
 import {ThemeProvider, useTheme} from './src/theme';
+import {requestMediaPermissions} from './src/services/permissions';
 
 function AppInner(): React.JSX.Element {
   const {t} = useTheme();
   // 启动图：首帧盖在页面上为初始化做缓冲，淡出后卸载
   const [splashDone, setSplashDone] = useState(false);
+
+  useEffect(() => {
+    if (!splashDone) {
+      return;
+    }
+    // 启动即申请「音频和歌曲」「文档和文件」权限（原生统一流程：
+    // 运行时权限对话框 -> 需要时跳系统设置页开启所有文件访问），
+    // 授权后可直接按路径扫描/读写任意目录，无需 SAF 逐个目录授权
+    requestMediaPermissions().catch(() => {});
+  }, [splashDone]);
+
   return (
     <SafeAreaProvider>
       {/* 沉浸式状态栏：透明背景让页面（含自定义背景图）延伸到状态栏底下，

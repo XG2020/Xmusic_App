@@ -422,7 +422,10 @@ export default function MineScreen({navigation, route}: any) {
         <TouchableOpacity
           style={styles.card}
           onPress={() => navigation.navigate('Local')}>
-          {renderCardIcon(skin.mineLocal, <Icon name="phone" size={30} />)}
+          {renderCardIcon(
+            skin.mineLocal,
+            <Icon name="phone" size={30} color={t.primary} />,
+          )}
           <Text style={styles.cardText}>本地音乐</Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -437,7 +440,10 @@ export default function MineScreen({navigation, route}: any) {
         <TouchableOpacity
           style={styles.card}
           onPress={() => navigation.navigate('NowPlaying')}>
-          {renderCardIcon(skin.mineNowPlaying, <Icon name="headset" size={30} />)}
+          {renderCardIcon(
+            skin.mineNowPlaying,
+            <Icon name="headset" size={30} color={t.primary} />,
+          )}
           <Text style={styles.cardText}>正在播放</Text>
         </TouchableOpacity>
       </View>
@@ -719,7 +725,8 @@ const createStyles = (t: Theme) =>
     cards: {flexDirection: 'row', gap: 10, padding: 12},
     card: {
       flex: 1,
-      backgroundColor: t.card,
+      // 包裹卡片底色：开启面板色时随主题（主题色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 14,
       paddingVertical: 16,
       alignItems: 'center',
@@ -800,7 +807,8 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 36,
     },
     dialog: {
-      backgroundColor: t.card,
+      // 弹窗背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 14,
       padding: 18,
     },

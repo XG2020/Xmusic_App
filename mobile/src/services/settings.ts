@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {NativeModules} from 'react-native';
+import RNFS from 'react-native-fs';
 
 /** 音质可选值（与 api.md /api/song/url 的 quality 参数一致，不可用时服务端自动降级） */
 export type Quality = 'master' | 'atmos_2' | 'atmos_51' | 'flac' | '320' | '128';
@@ -317,6 +318,135 @@ export async function setCoverSpin(on: boolean) {
   await AsyncStorage.setItem(COVER_SPIN_KEY, on ? '1' : '0');
 }
 
+// ===== 自定义主题色 =====
+
+const THEME_COLOR_KEY = 'theme_color';
+
+/** 合法主题色：#RRGGBB（大写），null 表示使用默认主题色 */
+export function isValidThemeColor(v: string | null | undefined): v is string {
+  return typeof v === 'string' && /^#[0-9A-Fa-f]{6}$/.test(v);
+}
+
+function normalizeThemeColor(raw: string | null): string | null {
+  return isValidThemeColor(raw) ? raw.toUpperCase() : null;
+}
+
+/** 内存缓存 + 订阅：设置页选择后主题立即重建，null = 默认主题色 */
+let themeColorCache: string | null = null;
+const themeColorListeners = new Set<(color: string | null) => void>();
+AsyncStorage.getItem(THEME_COLOR_KEY)
+  .then(raw => {
+    themeColorCache = normalizeThemeColor(raw);
+    themeColorListeners.forEach(l => l(themeColorCache));
+  })
+  .catch(() => {});
+
+/** 同步读取（主题 Provider 初始渲染判断） */
+export function getThemeColor(): string | null {
+  return themeColorCache;
+}
+
+/** 订阅主题色变化，返回取消函数 */
+export function subscribeThemeColor(
+  fn: (color: string | null) => void,
+): () => void {
+  themeColorListeners.add(fn);
+  return () => {
+    themeColorListeners.delete(fn);
+  };
+}
+
+/** 设置自定义主题色（null 恢复默认） */
+export async function setThemeColor(hex: string | null) {
+  const normalized = normalizeThemeColor(hex);
+  themeColorCache = normalized;
+  themeColorListeners.forEach(l => l(normalized));
+  if (normalized) {
+    await AsyncStorage.setItem(THEME_COLOR_KEY, normalized);
+  } else {
+    await AsyncStorage.removeItem(THEME_COLOR_KEY);
+  }
+}
+
+// ===== 板块背景（搜索栏/底栏/迷你条/歌单分类栏） =====
+
+const PANEL_ENABLED_KEY = 'panel_enabled';
+const PANEL_COLOR_KEY = 'panel_color';
+const PANEL_ALPHA_KEY = 'panel_alpha';
+
+/** 面板色透明度（0~1，1 = 纯板块色，0 = 完全透明，露出页面底色/背景图） */
+export const PANEL_ALPHA_MIN = 0;
+export const PANEL_ALPHA_MAX = 1;
+
+/** 内存缓存 + 订阅：板块背景实时重建主题，默认关闭（板块保持原有背景色） */
+let panelEnabledCache = false;
+/** 用户自定义板块色（独立于主题色），null = 未自定义（跟随深浅模式默认色） */
+let panelColorCache: string | null = null;
+let panelAlphaCache = 0.5;
+const panelListeners = new Set<() => void>();
+AsyncStorage.multiGet([PANEL_ENABLED_KEY, PANEL_COLOR_KEY, PANEL_ALPHA_KEY])
+  .then(pairs => {
+    panelEnabledCache = (pairs[0]?.[1] ?? '0') === '1';
+    const rawColor = pairs[1]?.[1] ?? null;
+    panelColorCache = isValidThemeColor(rawColor) ? rawColor.toUpperCase() : null;
+    const a = Number(pairs[2]?.[1] ?? NaN);
+    if (Number.isFinite(a) && a >= PANEL_ALPHA_MIN && a <= PANEL_ALPHA_MAX) {
+      panelAlphaCache = a;
+    }
+    panelListeners.forEach(l => l());
+  })
+  .catch(() => {});
+
+/** 同步读取（主题 Provider 初始渲染判断） */
+export function panelEnabled(): boolean {
+  return panelEnabledCache;
+}
+
+/** 同步读取用户自定义板块色（null = 未自定义，板块色跟随深浅模式默认色） */
+export function panelColor(): string | null {
+  return panelColorCache;
+}
+
+/** 同步读取面板色透明度（0~1，0 = 完全透明） */
+export function panelAlpha(): number {
+  return panelAlphaCache;
+}
+
+/** 订阅板块背景设置变化，返回取消函数 */
+export function subscribePanel(fn: () => void): () => void {
+  panelListeners.add(fn);
+  return () => {
+    panelListeners.delete(fn);
+  };
+}
+
+export async function setPanelEnabled(on: boolean) {
+  panelEnabledCache = on;
+  panelListeners.forEach(l => l());
+  await AsyncStorage.setItem(PANEL_ENABLED_KEY, on ? '1' : '0');
+}
+
+/** 设置自定义板块色（#RRGGBB，null 恢复深浅模式默认） */
+export async function setPanelColor(hex: string | null) {
+  const normalized = isValidThemeColor(hex) ? hex.toUpperCase() : null;
+  panelColorCache = normalized;
+  panelListeners.forEach(l => l());
+  if (normalized) {
+    await AsyncStorage.setItem(PANEL_COLOR_KEY, normalized);
+  } else {
+    await AsyncStorage.removeItem(PANEL_COLOR_KEY);
+  }
+}
+
+export async function setPanelAlpha(alpha: number) {
+  panelAlphaCache = Math.max(
+    PANEL_ALPHA_MIN,
+    Math.min(PANEL_ALPHA_MAX, alpha),
+  );
+  panelListeners.forEach(l => l());
+  await AsyncStorage.setItem(PANEL_ALPHA_KEY, String(panelAlphaCache));
+}
+
 // ===== 流量播放提醒开关 =====
 
 const DATA_REMINDER_KEY = 'data_reminder';
@@ -523,8 +653,24 @@ export async function clearSearchHistory() {
 // ===== 下载目录 =====
 
 const DOWNLOAD_DIR_KEY = 'download_dir';
+/** SAF 授权目录的显示名（设置页展示用），无则回退显示 uri/路径 */
+const DOWNLOAD_DIR_NAME_KEY = 'download_dir_name';
+const DEFAULT_DOWNLOAD_DIR = `${
+  RNFS.DownloadDirectoryPath ?? '/storage/emulated/0/Download'
+}/Xmusic`;
+const DEFAULT_DOWNLOAD_DIR_NAME = 'Download/Xmusic';
 
-/** 自定义下载目录，空字符串表示使用应用私有目录 */
+/** 默认下载目录：系统 Download/Xmusic */
+export function getDefaultDownloadDir(): string {
+  return DEFAULT_DOWNLOAD_DIR;
+}
+
+/** 默认下载目录显示名 */
+export function getDefaultDownloadDirName(): string {
+  return DEFAULT_DOWNLOAD_DIR_NAME;
+}
+
+/** 自定义下载目录，空字符串表示使用默认 Download/Xmusic */
 export async function getDownloadDir(): Promise<string> {
   try {
     return (await AsyncStorage.getItem(DOWNLOAD_DIR_KEY)) ?? '';
@@ -535,4 +681,17 @@ export async function getDownloadDir(): Promise<string> {
 
 export async function setDownloadDir(path: string) {
   await AsyncStorage.setItem(DOWNLOAD_DIR_KEY, path);
+}
+
+/** SAF 授权目录的显示名（如 Music/QQMusic），无显示名时返回空串 */
+export async function getDownloadDirName(): Promise<string> {
+  try {
+    return (await AsyncStorage.getItem(DOWNLOAD_DIR_NAME_KEY)) ?? '';
+  } catch (e) {
+    return '';
+  }
+}
+
+export async function setDownloadDirName(name: string) {
+  await AsyncStorage.setItem(DOWNLOAD_DIR_NAME_KEY, name);
 }

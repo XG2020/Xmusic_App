@@ -13,10 +13,14 @@ import {
   skipToNext,
   PENDING_URL,
 } from './player';
+import {syncSleepTimerState} from './sleepTimer';
 import type {Song} from '../types/music';
 
 export default async function playbackService() {
+  syncSleepTimerState(true).catch(() => {});
+
   TrackPlayer.addEventListener(Event.RemotePlay, async () => {
+    await syncSleepTimerState(true).catch(() => {});
     // 通知栏续播：在线曲目遇无网/仅Wi-Fi 时硬拦截（后台无法弹窗，用 Toast 提示）
     try {
       const tr = (await TrackPlayer.getActiveTrack()) as any;
@@ -71,8 +75,12 @@ export default async function playbackService() {
     }
     const isLocal = !!url && !/^https?:/i.test(url);
     if (isLocal) {
+      // content:// URI（Android 媒体库）由原生播放器直接管理，不做文件存在性检测
+      if (url.startsWith('content://')) {
+        return;
+      }
       const path = url.replace(/^file:\/\//i, '');
-      const exists = await RNFS.exists(path).catch(() => true);
+      const exists = await RNFS.exists(path).catch(() => false);
       if (!exists) {
         ToastAndroid.show(
           `「${tr.title}」本地文件不存在，已自动播放下一首`,
@@ -178,6 +186,7 @@ export default async function playbackService() {
   // 播放进度节流保存（progressUpdateEventInterval 为 1s，这里每 5s 落盘一次）
   let lastPosSave = 0;
   TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, e => {
+    syncSleepTimerState().catch(() => {});
     const now = Date.now();
     if (now - lastPosSave >= 5000) {
       lastPosSave = now;

@@ -87,6 +87,14 @@ export function useSkin(): SkinConfig {
   return config;
 }
 
+/** 订阅皮肤配置变化（返回取消函数），供细粒度场景使用 */
+export function subscribeSkin(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
 async function ensureSkinDir() {
   try {
     if (!(await RNFS.exists(SKIN_DIR))) {
@@ -150,15 +158,41 @@ async function assertImageUsable(uri: string) {
 
 /**
  * 用本地图片设置槽位皮肤：复制到 skins 目录（原图移动/删除后皮肤不受影响）。
+ * SAF 选中的图片（content://）由原生流式复制（RNFS 无法读 content URI）。
  * 失败时抛错由调用方提示。
  */
-export async function setSkinFromLocal(slot: SkinSlot, srcPath: string) {
-  // 先校验再落盘，坏图/超大图直接拒绝
-  await assertFileSizeOk(srcPath);
-  await assertImageUsable(toFileUri(srcPath));
+export async function setSkinFromLocal(slot: SkinSlot, src: string) {
+  // SAF 选择的图片（content://）：原生复制到私有目录后再统一校验落盘
+  if (src.startsWith('content://')) {
+    await ensureSkinDir();
+    const dest = slotFilePath(slot);
+    if (!NativeModules.LocalMusic?.copyImageToApp) {
+      throw new Error('当前系统不支持从本地选择图片');
+    }
+    try {
+      await NativeModules.LocalMusic.copyImageToApp(src, dest);
+      // 校验复制后的图片可用（防坏图/超大分辨率），与在线图片下载后校验一致
+      await assertFileSizeOk(dest);
+      await assertImageUsable(toFileUri(dest));
+    } catch (e) {
+      await RNFS.unlink(dest).catch(() => {});
+      throw e;
+    }
+    await removeSlotFile(slot);
+    config = {...config, [slot]: toFileUri(dest)};
+    await save();
+    if (slot === 'splash') {
+      syncNativeSplashFlag();
+    }
+    notify();
+    return;
+  }
+  // 普通文件路径：先校验再落盘，坏图/超大图直接拒绝
+  await assertFileSizeOk(src);
+  await assertImageUsable(toFileUri(src));
   await ensureSkinDir();
   const dest = slotFilePath(slot);
-  await RNFS.copyFile(srcPath, dest);
+  await RNFS.copyFile(src, dest);
   await removeSlotFile(slot);
   config = {...config, [slot]: toFileUri(dest)};
   await save();

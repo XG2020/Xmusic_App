@@ -30,6 +30,7 @@ import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
 import {formatDuration} from '../utils/format';
 import {useTheme, Theme} from '../theme';
+import {useSkin} from '../services/skin';
 import type {Song} from '../types/music';
 
 async function ensurePermission() {
@@ -43,6 +44,21 @@ async function ensurePermission() {
     if (requested !== RESULTS.GRANTED) {
       throw new Error('读取本地音乐权限被拒绝');
     }
+  }
+}
+
+/** Android 13+ 请求通知权限（媒体通知/前台服务展示需要，拒绝不影响播放） */
+export async function ensureNotificationPermission() {
+  if (Number(Platform.Version) < 33) {
+    return;
+  }
+  try {
+    const status = await check(PERMISSIONS.ANDROID.POST_NOTIFICATIONS);
+    if (status !== RESULTS.GRANTED) {
+      await request(PERMISSIONS.ANDROID.POST_NOTIFICATIONS);
+    }
+  } catch (e) {
+    // 请求失败不影响功能
   }
 }
 
@@ -82,6 +98,7 @@ const LocalSongRow = React.memo(
 export default function LocalScreen({navigation}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const skin = useSkin();
   const [songs, setSongs] = useState<Song[]>([]);
   const [scanning, setScanning] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
@@ -132,7 +149,22 @@ export default function LocalScreen({navigation}: any) {
     if (!song.localPath) {
       return;
     }
-    AppAlert.alert('删除歌曲', `将从设备中删除文件：\n${song.localPath}`, [
+    // SAF 授权目录歌曲（content:// document uri）：原生可删，显示文件名代替原始 uri
+    if (song.localPath.startsWith('content://') && !song.localPath.includes('/document/')) {
+      // MediaStore content:// 曲目无法直接删文件，提示用户到系统媒体库管理
+      AppAlert.alert('无法删除', '该歌曲来自系统媒体库，请前往系统「文件管理」或音乐应用删除');
+      return;
+    }
+    const shownPath = (() => {
+      try {
+        return song.localPath!.includes('/document/')
+          ? decodeURIComponent(song.localPath!.split('/').pop() ?? '')
+          : song.localPath!;
+      } catch (e) {
+        return song.localPath!;
+      }
+    })();
+    AppAlert.alert('删除歌曲', `将从设备中删除文件：\n${shownPath}`, [
       {text: '取消', style: 'cancel'},
       {
         text: '删除',
@@ -201,7 +233,9 @@ export default function LocalScreen({navigation}: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>‹</Text>
@@ -268,6 +302,7 @@ export default function LocalScreen({navigation}: any) {
       <SongActionSheet
         song={actionSong}
         onClose={() => setActionSong(null)}
+        showDownloadAction={false}
         extraActions={
           actionSong
             ? [
@@ -393,6 +428,7 @@ export default function LocalScreen({navigation}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    transparentBg: {backgroundColor: 'transparent'},
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -458,7 +494,8 @@ const createStyles = (t: Theme) =>
       justifyContent: 'flex-end',
     },
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,

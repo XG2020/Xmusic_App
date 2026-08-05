@@ -12,6 +12,9 @@ import {
   LayoutChangeEvent,
   GestureResponderEvent,
   PanResponder,
+  TextInput,
+  Switch,
+  TouchableWithoutFeedback,
   ToastAndroid,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
@@ -27,7 +30,15 @@ import {formatDuration} from '../utils/format';
 import {useTheme, Theme} from '../theme';
 import {useSpin} from '../utils/useSpin';
 import {startDownload} from '../services/downloadManager';
-import {useSleepTimer} from '../services/sleepTimer';
+import {
+  useSleepTimer,
+  setSleepTimer,
+  cancelSleepTimer,
+  getSleepMinutes,
+  getSleepRemaining,
+  getSleepFinishTrack,
+  setSleepFinishTrack,
+} from '../services/sleepTimer';
 import {
   Quality,
   QUALITY_OPTIONS,
@@ -50,6 +61,7 @@ import {cacheProgressOf, subscribeCacheProgress} from '../services/songCache';
 import {isConnected, subscribeNetwork} from '../services/network';
 import {isFav, toggleFav} from '../services/store';
 import {useSkin} from '../services/skin';
+import AnimatedBottomSheetModal from '../components/AnimatedBottomSheetModal';
 import Icon, {IconName} from '../components/Icon';
 import SongDetailView from './SongDetailScreen';
 import LyricView from './LyricScreen';
@@ -69,6 +81,13 @@ const RATE_OPTIONS = [
   0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9,
   2.0,
 ];
+const TIMER_PRESETS = [15, 30, 45, 60];
+
+function fmtCountdown(sec: number) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
 /** 倍速对应的图标名：1.0 为 normal，其余按 speed05~speed20（含浮点容差兜底） */
 const rateIconName = (r: number): IconName => {
@@ -241,6 +260,9 @@ export default function PlayerScreen({navigation}: any) {
   const styles = useMemo(() => createStyles(t), [t]);
   // 皮肤：有自定义播放页背景图时铺满整屏，容器随之透明
   const skin = useSkin();
+  // 专属播放页背景优先；未设置时回退到软件全局背景图。
+  const pageBackground = skin.playerBg ?? skin.bg;
+  const pageBackgroundTint = skin.playerBg ? t.playerBg : t.bg;
   const playback = usePlaybackState();
   const nativeTrack = useActiveTrack();
   // 延迟恢复：原生队列为空时回退显示上次会话快照的当前曲目（仅只读展示，不抢音频焦点）。
@@ -266,6 +288,12 @@ export default function PlayerScreen({navigation}: any) {
   const [fav, setFav] = useState(false);
   // 睡眠定时器
   const sleepRemain = useSleepTimer();
+  const [timerSheet, setTimerSheet] = useState(false);
+  const [sleepMinutes, setSleepMinutesState] = useState(getSleepMinutes());
+  const [timerRemain, setTimerRemain] = useState(getSleepRemaining());
+  const [finishTrack, setFinishTrackState] = useState(getSleepFinishTrack());
+  const [customTimerModal, setCustomTimerModal] = useState(false);
+  const [customSleepMin, setCustomSleepMin] = useState('');
   // 音质设置（播放音质已移至设置页，这里仅保留下载音质选择弹层）
   const [dlSheet, setDlSheet] = useState(false);
   // 播放倍速
@@ -277,6 +305,24 @@ export default function PlayerScreen({navigation}: any) {
       .then(setRate)
       .catch(() => {});
   }, []);
+
+  const refreshSleepState = useCallback(() => {
+    setSleepMinutesState(getSleepMinutes());
+    setTimerRemain(getSleepRemaining());
+    setFinishTrackState(getSleepFinishTrack());
+  }, []);
+
+  useEffect(() => {
+    refreshSleepState();
+  }, [refreshSleepState, timerSheet, sleepRemain]);
+
+  useEffect(() => {
+    if (!timerSheet) {
+      return;
+    }
+    const iv = setInterval(refreshSleepState, 1000);
+    return () => clearInterval(iv);
+  }, [refreshSleepState, timerSheet]);
 
   const playing = playback.state === State.Playing;
 
@@ -399,10 +445,12 @@ export default function PlayerScreen({navigation}: any) {
   /** 选择播放倍速 */
   const onPickRate = async (r: number) => {
     setSpeedSheet(false);
-    setRate(r);
     try {
       await TrackPlayer.setRate(r);
-    } catch (e) {}
+      setRate(r);
+    } catch (e) {
+      ToastAndroid.show('倍速切换失败', ToastAndroid.SHORT);
+    }
   };
 
   /** 快进/快退指定秒数（按需取一次进度，父组件不常驻订阅 useProgress） */
@@ -436,7 +484,7 @@ export default function PlayerScreen({navigation}: any) {
     }
     const ok = await startDownload(trackToSong(track), q);
     if (ok) {
-      AppAlert.alert('已开始下载', '进度可在「下载管理」中查看');
+      ToastAndroid.show('已开始下载，进度可在下载管理中查看', ToastAndroid.SHORT);
     } else {
       AppAlert.alert('无法下载', '该歌曲正在下载中或没有可用地址');
     }
@@ -448,21 +496,60 @@ export default function PlayerScreen({navigation}: any) {
     await doDownload(q);
   };
 
-  const onToggleFav = async () => {
-    if (!track) {
+  const closeCustomSleepModal = () => {
+    setCustomSleepMin('');
+    setCustomTimerModal(false);
+  };
+
+  const openCustomSleepModal = () => {
+    setCustomSleepMin(sleepMinutes > 0 ? String(sleepMinutes) : '');
+    setCustomTimerModal(true);
+  };
+
+  const pickSleep = (min: number) => {
+    if (min <= 0) {
+      cancelSleepTimer();
+    } else {
+      setSleepTimer(min);
+    }
+    refreshSleepState();
+    setTimerSheet(false);
+    closeCustomSleepModal();
+  };
+
+  const onSubmitCustomSleep = () => {
+    const min = Math.floor(Number(customSleepMin));
+    if (!min || min <= 0 || min > 24 * 60) {
+      AppAlert.alert('请输入有效的分钟数（1-1440）');
       return;
     }
-    const now = await toggleFav(trackToSong(track));
-    setFav(now);
+    pickSleep(min);
+  };
+
+  const [favLoading, setFavLoading] = useState(false);
+
+  const onToggleFav = async () => {
+    if (!track || favLoading) {
+      return;
+    }
+    setFavLoading(true);
+    try {
+      const now = await toggleFav(trackToSong(track));
+      setFav(now);
+    } catch (e) {
+      ToastAndroid.show('收藏操作失败', ToastAndroid.SHORT);
+    } finally {
+      setFavLoading(false);
+    }
   };
 
   return (
     <View style={styles.bgWrap}>
       {/* 自定义播放页背景图：铺满整屏（含状态栏底下），未设置时用主题底色 */}
-      {!!skin.playerBg && (
+      {!!pageBackground && (
         <>
           <Image
-            source={{uri: skin.playerBg}}
+            source={{uri: pageBackground}}
             style={StyleSheet.absoluteFill}
             resizeMode="cover"
             resizeMethod="resize"
@@ -471,13 +558,13 @@ export default function PlayerScreen({navigation}: any) {
           <View
             style={[
               StyleSheet.absoluteFill,
-              {backgroundColor: t.playerBg + 'A6'},
+              {backgroundColor: pageBackgroundTint + 'A6'},
             ]}
           />
         </>
       )}
       <SafeAreaView
-        style={[styles.container, !!skin.playerBg && styles.transparentBg]}
+        style={[styles.container, !!pageBackground && styles.transparentBg]}
         edges={['top', 'bottom']}>
       {/* 下滑收起：整屏内容跟手下移 */}
       <Animated.View
@@ -486,14 +573,20 @@ export default function PlayerScreen({navigation}: any) {
         <View style={styles.header} {...dismissResponder.panHandlers}>
           <TouchableOpacity
             onPress={() => navigation.goBack()}
-            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+            accessibilityRole="button"
+            accessibilityLabel="收起播放页">
             <Text style={styles.headerBtn}>⌄</Text>
           </TouchableOpacity>
           <View style={styles.tabs}>
             {PAGES.map((label, i) => (
               <React.Fragment key={label}>
                 {i > 0 && <Text style={styles.tabDivider}>|</Text>}
-                <TouchableOpacity onPress={() => goPage(i)}>
+                <TouchableOpacity
+                  onPress={() => goPage(i)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`切换到${label}页`}
+                  accessibilityState={{selected: page === i}}>
                   <Text style={[styles.tab, page === i && styles.tabActive]}>
                     {label}
                   </Text>
@@ -551,7 +644,10 @@ export default function PlayerScreen({navigation}: any) {
                 </Text>
                 <TouchableOpacity
                   onPress={onToggleFav}
-                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                  accessibilityRole="button"
+                  accessibilityLabel={fav ? '取消收藏' : '收藏'}
+                  accessibilityState={{selected: fav, disabled: favLoading}}>
                   {fav ? (
                     <Icon name="favOn" size={35} />
                   ) : (
@@ -568,7 +664,10 @@ export default function PlayerScreen({navigation}: any) {
             <View style={styles.dlRow}>
               <TouchableOpacity
                 onPress={() => setSpeedSheet(true)}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                accessibilityRole="button"
+                accessibilityLabel="播放倍速"
+                accessibilityState={{selected: rate !== 1}}>
                 <Icon
                   name={rateIconName(rate)}
                   size={40}
@@ -577,17 +676,23 @@ export default function PlayerScreen({navigation}: any) {
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => seekBy(-15)}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                accessibilityRole="button"
+                accessibilityLabel="快退15秒">
                 <Icon name="speedBack15" size={40} color={t.playerSub} />
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => seekBy(15)}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                accessibilityRole="button"
+                accessibilityLabel="快进15秒">
                 <Icon name="speedForward15" size={40} color={t.playerSub} />
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={onDownload}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                accessibilityRole="button"
+                accessibilityLabel="下载歌曲">
                 <Icon name="downloadOutline" size={40} color={t.playerSub} />
               </TouchableOpacity>
             </View>
@@ -606,17 +711,28 @@ export default function PlayerScreen({navigation}: any) {
 
             {/* 播放控制 */}
             <View style={styles.controls}>
-              <TouchableOpacity onPress={cycleMode}>
+              <TouchableOpacity
+                onPress={cycleMode}
+                accessibilityRole="button"
+                accessibilityLabel={`播放模式：${
+                  mode === 'list' ? '列表循环' : mode === 'single' ? '单曲循环' : '随机播放'
+                }`}
+                accessibilityState={{selected: mode === 'single'}}>
                 <Icon name={MODE_ICON[mode]} size={45} color={t.playerSub} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => skipToPreviousUser()}>
+              <TouchableOpacity
+                onPress={() => skipToPreviousUser()}
+                accessibilityRole="button"
+                accessibilityLabel="上一首">
                 <Icon name="prev" size={30} color={t.playerText} />
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.playBtn}
                 onPress={() => {
                   playing ? TrackPlayer.pause() : resumeUser();
-                }}>
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={playing ? '暂停' : '播放'}>
                 <Icon
                   name={playing ? 'pause' : 'play'}
                   size={26}
@@ -624,11 +740,17 @@ export default function PlayerScreen({navigation}: any) {
                   style={playing ? undefined : styles.playIconShift}
                 />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => skipToNextUser(mode)}>
+              <TouchableOpacity
+                onPress={() => skipToNextUser(mode)}
+                accessibilityRole="button"
+                accessibilityLabel="下一首">
                 <Icon name="next" size={30} color={t.playerText} />
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => navigation.navigate('SleepTimer')}>
+                onPress={() => setTimerSheet(true)}
+                accessibilityRole="button"
+                accessibilityLabel="睡眠定时"
+                accessibilityState={{selected: sleepRemain > 0}}>
                 <Icon
                   name="timer"
                   size={35}
@@ -645,81 +767,237 @@ export default function PlayerScreen({navigation}: any) {
         </ScrollView>
       </Animated.View>
 
-      {/* 下载音质选择弹层 */}
-      <Modal
-        visible={dlSheet}
-        transparent
-        statusBarTranslucent
-        animationType="slide"
-        onRequestClose={() => setDlSheet(false)}>
-        <TouchableOpacity
-          style={styles.sheetMask}
-          activeOpacity={1}
-          onPress={() => setDlSheet(false)}>
-          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
-            <Text style={styles.sheetTitle}>选择下载音质</Text>
-            {/* 点击即下载，不做选中态高亮 */}
-            {QUALITY_OPTIONS.map(opt => (
+      {/* 睡眠定时弹层 */}
+      <AnimatedBottomSheetModal
+        visible={timerSheet}
+        onClose={() => setTimerSheet(false)}
+        sheetStyle={styles.sheet}>
+        <View>
+          <Text style={styles.sheetTitle}>定时关闭</Text>
+
+          <TouchableOpacity
+            style={styles.sheetItem}
+            onPress={() => pickSleep(0)}
+            accessibilityRole="button"
+            accessibilityLabel="不开启定时关闭"
+            accessibilityState={{selected: sleepMinutes === 0}}>
+            <Text style={styles.sheetItemLabel}>不开启</Text>
+            {sleepMinutes === 0 ? (
+              <Text style={styles.timerCheck}>✓</Text>
+            ) : null}
+          </TouchableOpacity>
+
+          {TIMER_PRESETS.map(min => {
+            const active = sleepMinutes === min;
+            return (
               <TouchableOpacity
-                key={opt.value}
+                key={min}
                 style={styles.sheetItem}
-                onPress={() => onPickQuality(opt.value)}>
-                <View style={styles.sheetItemLeft}>
-                  <Text style={styles.sheetItemLabel}>{opt.label}</Text>
-                  <Text style={styles.sheetItemDesc}>{opt.desc}</Text>
-                </View>
+                onPress={() => pickSleep(min)}
+                accessibilityRole="button"
+                accessibilityLabel={`${min}分钟后关闭`}
+                accessibilityState={{selected: active}}>
+                <Text
+                  style={[
+                    styles.sheetItemLabel,
+                    active && styles.timerActiveText,
+                  ]}>
+                  {min}分钟后
+                </Text>
+                {active && timerRemain > 0 ? (
+                  <Text style={styles.timerCountdown}>
+                    {fmtCountdown(timerRemain)}
+                  </Text>
+                ) : null}
+                {active ? <Text style={styles.timerCheck}>✓</Text> : null}
               </TouchableOpacity>
-            ))}
-            <Text style={styles.sheetHint}>高音质不可用时自动降级</Text>
+            );
+          })}
+
+          <View style={styles.timerCustomBlock}>
             <TouchableOpacity
-              style={styles.sheetCancel}
-              onPress={() => setDlSheet(false)}>
-              <Text style={styles.sheetCancelText}>取消</Text>
+              style={[styles.sheetItem, styles.timerCustomHeader]}
+              onPress={openCustomSleepModal}
+              accessibilityRole="button"
+              accessibilityLabel="自定义定时分钟数">
+              <Text
+                style={[
+                  styles.sheetItemLabel,
+                  sleepMinutes > 0 &&
+                    !TIMER_PRESETS.includes(sleepMinutes) &&
+                    styles.timerActiveText,
+                ]}>
+                自定义
+                {sleepMinutes > 0 && !TIMER_PRESETS.includes(sleepMinutes)
+                  ? `（${sleepMinutes}分钟）`
+                  : ''}
+              </Text>
+              {sleepMinutes > 0 &&
+              !TIMER_PRESETS.includes(sleepMinutes) &&
+              timerRemain > 0 ? (
+                <Text style={styles.timerCountdown}>
+                  {fmtCountdown(timerRemain)}
+                </Text>
+              ) : null}
+              {sleepMinutes > 0 && !TIMER_PRESETS.includes(sleepMinutes) ? (
+                <Text style={styles.timerCheck}>✓</Text>
+              ) : null}
             </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+
+          <View style={[styles.sheetItem, styles.timerSwitchRow]}>
+            <View style={styles.timerSwitchTextWrap}>
+              <Text style={styles.sheetItemLabel}>播完整首歌再关闭</Text>
+              <Text style={styles.sheetItemDesc}>
+                {finishTrack ? '到时后播完当前歌曲再暂停' : '到时后立即暂停'}
+              </Text>
+            </View>
+            <Switch
+              value={finishTrack}
+              onValueChange={v => {
+                setFinishTrackState(v);
+                setSleepFinishTrack(v);
+              }}
+              trackColor={{
+                false: t.isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)',
+                true: t.primary,
+              }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          <Text style={styles.sheetHint}>
+            {finishTrack
+              ? '计时结束后，播完当前歌曲停止播放'
+              : '计时结束后，停止播放'}
+          </Text>
+          <TouchableOpacity
+            style={styles.sheetCancel}
+            onPress={() => setTimerSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭定时关闭弹层">
+            <Text style={styles.sheetCancelText}>取消</Text>
+          </TouchableOpacity>
+        </View>
+      </AnimatedBottomSheetModal>
+
+      <Modal
+        visible={customTimerModal}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeCustomSleepModal}>
+        <TouchableWithoutFeedback onPress={closeCustomSleepModal}>
+          <View style={styles.timerDialogOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.timerDialogCard}>
+                <Text style={styles.timerDialogTitle}>自定义定时分钟数</Text>
+                <TextInput
+                  style={styles.timerDialogInput}
+                  placeholder="输入分钟数（1-1440）"
+                  placeholderTextColor={t.sub}
+                  keyboardType="number-pad"
+                  value={customSleepMin}
+                  onChangeText={setCustomSleepMin}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={onSubmitCustomSleep}
+                />
+                <View style={styles.timerDialogBtnRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.timerDialogBtn,
+                      styles.timerDialogCancelBtn,
+                    ]}
+                    onPress={closeCustomSleepModal}
+                    accessibilityRole="button"
+                    accessibilityLabel="取消自定义定时">
+                    <Text style={styles.timerDialogCancelText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.timerDialogBtn,
+                      styles.timerDialogConfirmBtn,
+                    ]}
+                    onPress={onSubmitCustomSleep}
+                    accessibilityRole="button"
+                    accessibilityLabel="确定自定义定时">
+                    <Text style={styles.timerDialogConfirmText}>确定</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
       </Modal>
 
-      {/* 播放倍速选择弹层 */}
-      <Modal
-        visible={speedSheet}
-        transparent
-        statusBarTranslucent
-        animationType="slide"
-        onRequestClose={() => setSpeedSheet(false)}>
-        <TouchableOpacity
-          style={styles.sheetMask}
-          activeOpacity={1}
-          onPress={() => setSpeedSheet(false)}>
-          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
-            <Text style={styles.sheetTitle}>播放倍速</Text>
-            <View style={styles.rateGrid}>
-              {RATE_OPTIONS.map(r => {
-                const active = Math.abs(rate - r) < 0.01;
-                return (
-                  <TouchableOpacity
-                    key={r}
-                    style={[styles.rateItem, active && styles.rateItemActive]}
-                    onPress={() => onPickRate(r)}>
-                    <Text
-                      style={[
-                        styles.rateText,
-                        active && styles.rateTextActive,
-                      ]}>
-                      {r.toFixed(1)}x
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+      {/* 下载音质选择弹层 */}
+      <AnimatedBottomSheetModal
+        visible={dlSheet}
+        onClose={() => setDlSheet(false)}
+        sheetStyle={styles.sheet}>
+        <View>
+          <Text style={styles.sheetTitle}>选择下载音质</Text>
+          {/* 点击即下载，不做选中态高亮 */}
+          {QUALITY_OPTIONS.map(opt => (
             <TouchableOpacity
-              style={styles.sheetCancel}
-              onPress={() => setSpeedSheet(false)}>
-              <Text style={styles.sheetCancelText}>取消</Text>
+              key={opt.value}
+              style={styles.sheetItem}
+              onPress={() => onPickQuality(opt.value)}
+              accessibilityRole="button"
+              accessibilityLabel={`下载音质${opt.label}`}>
+              <View style={styles.sheetItemLeft}>
+                <Text style={styles.sheetItemLabel}>{opt.label}</Text>
+                <Text style={styles.sheetItemDesc}>{opt.desc}</Text>
+              </View>
             </TouchableOpacity>
+          ))}
+          <Text style={styles.sheetHint}>高音质不可用时自动降级</Text>
+          <TouchableOpacity
+            style={styles.sheetCancel}
+            onPress={() => setDlSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭下载音质选择">
+            <Text style={styles.sheetCancelText}>取消</Text>
+          </TouchableOpacity>
+        </View>
+      </AnimatedBottomSheetModal>
+
+      {/* 播放倍速选择弹层 */}
+      <AnimatedBottomSheetModal
+        visible={speedSheet}
+        onClose={() => setSpeedSheet(false)}
+        sheetStyle={styles.sheet}>
+        <View>
+          <Text style={styles.sheetTitle}>播放倍速</Text>
+          <View style={styles.rateGrid}>
+            {RATE_OPTIONS.map(r => {
+              const active = Math.abs(rate - r) < 0.01;
+              return (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.rateItem, active && styles.rateItemActive]}
+                  onPress={() => onPickRate(r)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`播放倍速${r.toFixed(1)}倍`}
+                  accessibilityState={{selected: active}}>
+                  <Text
+                    style={[styles.rateText, active && styles.rateTextActive]}>
+                    {r.toFixed(1)}x
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
-        </TouchableOpacity>
-      </Modal>
+          <TouchableOpacity
+            style={styles.sheetCancel}
+            onPress={() => setSpeedSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭倍速选择">
+            <Text style={styles.sheetCancelText}>取消</Text>
+          </TouchableOpacity>
+        </View>
+      </AnimatedBottomSheetModal>
       </SafeAreaView>
     </View>
   );
@@ -885,13 +1163,9 @@ const createStyles = (t: Theme) =>
     // 新播放图标素材已自带右偏居中，仅留微量补偿
     playIconShift: {marginLeft: 1},
     playBtnText: {color: '#fff', fontSize: 22, fontWeight: '700'},
-    sheetMask: {
-      flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.55)',
-      justifyContent: 'flex-end',
-    },
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,
@@ -915,6 +1189,67 @@ const createStyles = (t: Theme) =>
     sheetItemLeft: {flex: 1},
     sheetItemLabel: {color: t.text, fontSize: 15},
     sheetItemDesc: {color: t.sub, fontSize: 11, marginTop: 2},
+    timerActiveText: {color: t.primary, fontWeight: '600'},
+    timerCountdown: {color: t.sub, fontSize: 14, marginRight: 12},
+    timerCheck: {color: t.primary, fontSize: 18, fontWeight: '700'},
+    timerCustomBlock: {marginTop: 2},
+    timerCustomHeader: {paddingBottom: 12},
+    timerSwitchRow: {marginTop: 8},
+    timerSwitchTextWrap: {flex: 1, paddingRight: 12},
+    timerDialogOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 28,
+    },
+    timerDialogCard: {
+      width: '100%',
+      maxWidth: 320,
+      backgroundColor: t.panel ?? t.card,
+      borderRadius: 14,
+      paddingHorizontal: 20,
+      paddingTop: 20,
+      paddingBottom: 18,
+      gap: 16,
+    },
+    timerDialogTitle: {
+      color: t.text,
+      fontSize: 16,
+      fontWeight: '700',
+      textAlign: 'center',
+    },
+    timerDialogInput: {
+      borderWidth: 1,
+      borderColor: t.border,
+      borderRadius: 10,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+      fontSize: 16,
+      color: t.text,
+      backgroundColor: t.bg,
+      textAlign: 'center',
+    },
+    timerDialogBtnRow: {flexDirection: 'row', gap: 12},
+    timerDialogBtn: {
+      flex: 1,
+      borderRadius: 10,
+      paddingVertical: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    timerDialogCancelBtn: {backgroundColor: t.cardLight},
+    timerDialogCancelText: {
+      color: t.sub,
+      fontSize: 15,
+      fontWeight: '600',
+    },
+    timerDialogConfirmBtn: {backgroundColor: t.primary},
+    timerDialogConfirmText: {
+      color: '#fff',
+      fontSize: 15,
+      fontWeight: '600',
+    },
     sheetHint: {
       color: t.sub,
       fontSize: 11,

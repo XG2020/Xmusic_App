@@ -6,12 +6,12 @@ import {
   ScrollView,
   StyleSheet,
   Modal,
-  FlatList,
   ActivityIndicator,
   Linking,
   Switch,
   TextInput,
   ToastAndroid,
+  Platform,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -25,8 +25,12 @@ import {
   setPlayQuality,
   getDownloadQuality,
   setDownloadQuality,
+  getDefaultDownloadDir,
+  getDefaultDownloadDirName,
   getDownloadDir,
   setDownloadDir,
+  getDownloadDirName,
+  setDownloadDirName,
   FONT_SIZE_OPTIONS,
   fontSizeLabel,
   getAutoOpenPlayer,
@@ -53,7 +57,8 @@ import {
 import {getCustomApiUrl, setCustomApiUrl} from '../services/api';
 import {applyQualityToCurrent} from '../services/player';
 import {useSleepTimer, formatSleepRemaining} from '../services/sleepTimer';
-import {listSubDirs, STORAGE_ROOT, DirEntry} from '../services/local';
+import {pickDownloadDir} from '../services/local';
+import {checkMediaPermissions, requestMediaPermissions} from '../services/permissions';
 import {checkUpdate} from '../services/update';
 import {
   CACHE_LIMIT_OPTIONS,
@@ -91,12 +96,9 @@ export default function SettingsScreen({navigation}: any) {
   const [sheet, setSheet] = useState<SheetKind>(null);
   // 定时关闭
   const sleepRemain = useSleepTimer();
-  // 下载目录
+  // 下载目录（空值 = 默认 Download/Xmusic；SAF 授权时为 content:// uri + 目录显示名）
   const [downloadDir, setDownloadDirState] = useState('');
-  const [dirModal, setDirModal] = useState(false);
-  const [browsePath, setBrowsePath] = useState(STORAGE_ROOT);
-  const [browseDirs, setBrowseDirs] = useState<DirEntry[]>([]);
-  const [browsing, setBrowsing] = useState(false);
+  const [downloadDirName, setDownloadDirNameState] = useState('');
   // 检查更新
   const [checking, setChecking] = useState(false);
   // 缓存
@@ -120,6 +122,8 @@ export default function SettingsScreen({navigation}: any) {
   // 下载附件：同时下载歌词/封面
   const [dlLyric, setDlLyric] = useState(true);
   const [dlCover, setDlCover] = useState(true);
+  // 存储与媒体权限（音频和歌曲 / 文档和文件）
+  const [permGranted, setPermGranted] = useState(true);
   // 开发者模式：连点版本号 5 次 -> 密钥校验 -> 自定义 API 接口
   const verTapCount = useRef(0);
   const verTapLast = useRef(0);
@@ -136,6 +140,7 @@ export default function SettingsScreen({navigation}: any) {
 
   useEffect(() => {
     getDownloadDir().then(setDownloadDirState);
+    getDownloadDirName().then(setDownloadDirNameState);
     getPlayQuality().then(setPlayQ);
     getDownloadQuality().then(setDlQ);
     getMaxCacheMb().then(setMaxCacheMbState);
@@ -148,6 +153,9 @@ export default function SettingsScreen({navigation}: any) {
     getAllowMix().then(setAllowMixState);
     getDownloadLyric().then(setDlLyric);
     getDownloadCover().then(setDlCover);
+    checkMediaPermissions()
+      .then(s => setPermGranted(s.audio && s.allFiles))
+      .catch(() => {});
     getDevUnlocked().then(on => {
       devUnlocked.current = on;
     });
@@ -257,37 +265,28 @@ export default function SettingsScreen({navigation}: any) {
 
   // ===== 下载目录 =====
 
-  const openDirBrowser = async (path: string) => {
-    setBrowsing(true);
-    setBrowsePath(path);
-    try {
-      setBrowseDirs(await listSubDirs(path));
-    } catch (e) {
-      setBrowseDirs([]);
-    } finally {
-      setBrowsing(false);
-    }
-  };
-
-  const browseUp = () => {
-    if (browsePath === STORAGE_ROOT) {
+  const onPickDownloadDir = async () => {
+    // SAF 系统目录选择器：选择即持久化授权，下载可直接写入所选目录（含公共目录）
+    const picked = await pickDownloadDir();
+    if (!picked) {
+      // 用户取消不打扰；非 Android 平台无 SAF，提示不支持
+      if (Platform.OS !== 'android') {
+        AppAlert.alert('暂不支持', '当前平台仅支持应用默认下载目录。');
+      }
       return;
     }
-    const parent = browsePath.slice(0, browsePath.lastIndexOf('/'));
-    openDirBrowser(parent.length < STORAGE_ROOT.length ? STORAGE_ROOT : parent);
-  };
-
-  const pickDownloadDir = async () => {
-    await setDownloadDir(browsePath);
-    setDownloadDirState(browsePath);
-    setDirModal(false);
-    AppAlert.alert('已设置下载目录', browsePath);
+    await setDownloadDir(picked.uri);
+    await setDownloadDirName(picked.name);
+    setDownloadDirState(picked.uri);
+    setDownloadDirNameState(picked.name);
+    AppAlert.alert('已设置下载目录', picked.name);
   };
 
   const resetDownloadDir = async () => {
     await setDownloadDir('');
+    await setDownloadDirName('');
     setDownloadDirState('');
-    setDirModal(false);
+    setDownloadDirNameState('');
   };
 
   // ===== 检查更新 =====
@@ -406,9 +405,8 @@ export default function SettingsScreen({navigation}: any) {
     </TouchableOpacity>
   );
 
-  const dirShort = downloadDir
-    ? downloadDir.replace(`${STORAGE_ROOT}/`, '')
-    : '默认';
+  const defaultDirShort = getDefaultDownloadDirName();
+  const dirShort = downloadDirName || downloadDir || defaultDirShort;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -462,9 +460,31 @@ export default function SettingsScreen({navigation}: any) {
           {renderRow('歌曲下载品质', qualityOption(dlQ).label, () =>
             setSheet('download'),
           )}
+          {renderRow(
+            '存储与媒体权限',
+            permGranted ? '已授权' : '未完全授权，点击重新申请',
+            async () => {
+              // 未授权时重新发起申请（所有文件访问会跳系统设置页，返回后结算状态）
+              const s = await requestMediaPermissions().catch(() => null);
+              if (s) {
+                setPermGranted(s.audio && s.allFiles);
+              }
+            },
+          )}
           {renderRow('歌曲存储位置设置', dirShort, () => {
-            setDirModal(true);
-            openDirBrowser(downloadDir || STORAGE_ROOT);
+            if (!downloadDir) {
+              onPickDownloadDir();
+              return;
+            }
+            AppAlert.alert(
+              '下载目录',
+              `默认位置：${getDefaultDownloadDir()}\n\n重新选择目录或恢复默认？`,
+              [
+              {text: '取消', style: 'cancel'},
+              {text: '恢复默认', onPress: resetDownloadDir},
+              {text: '重新选择', onPress: onPickDownloadDir},
+              ],
+            );
           })}
           {/* 开关行：下载时同时下载歌词/封面 */}
           <View style={styles.row}>
@@ -709,72 +729,6 @@ export default function SettingsScreen({navigation}: any) {
         </TouchableOpacity>
       </Modal>
 
-      {/* 下载目录浏览器 */}
-      <Modal
-        visible={dirModal}
-        transparent
-        statusBarTranslucent
-        animationType="slide"
-        onRequestClose={() => setDirModal(false)}>
-        <View style={styles.sheetMask}>
-          <View style={styles.sheet}>
-            <View style={styles.browseHeader}>
-              <TouchableOpacity onPress={browseUp}>
-                <Text style={styles.browseUp}>‹ 上级</Text>
-              </TouchableOpacity>
-              <Text style={styles.browsePath} numberOfLines={1}>
-                {browsePath === STORAGE_ROOT
-                  ? '内部存储'
-                  : browsePath.replace(`${STORAGE_ROOT}/`, '')}
-              </Text>
-            </View>
-            {browsing ? (
-              <View style={styles.browseLoading}>
-                <ActivityIndicator color={t.primary} />
-              </View>
-            ) : (
-              <FlatList
-                showsVerticalScrollIndicator={false}
-                data={browseDirs}
-                keyExtractor={d => d.path}
-                style={styles.sheetList}
-                ListEmptyComponent={
-                  <Text style={styles.sheetEmpty}>没有子文件夹</Text>
-                }
-                renderItem={({item}) => (
-                  <TouchableOpacity
-                    style={styles.dirItem}
-                    onPress={() => openDirBrowser(item.path)}>
-                    <Text style={styles.dirIcon}>📁</Text>
-                    <Text style={styles.dirName} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.dirArrow}>›</Text>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-            <TouchableOpacity
-              style={styles.sheetPrimaryBtn}
-              onPress={pickDownloadDir}>
-              <Text style={styles.sheetPrimaryText}>✓ 下载到此文件夹</Text>
-            </TouchableOpacity>
-            {!!downloadDir && (
-              <TouchableOpacity
-                style={styles.sheetOutlineBtn}
-                onPress={resetDownloadDir}>
-                <Text style={styles.sheetOutlineText}>恢复默认目录</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={styles.sheetCancel}
-              onPress={() => setDirModal(false)}>
-              <Text style={styles.sheetCancelText}>取消</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
       {/* 开发者密钥验证（连点版本号 5 次触发） */}
       <Modal
         visible={keyModal}
@@ -922,7 +876,8 @@ const createStyles = (t: Theme) =>
     },
     devCard: {
       alignSelf: 'stretch',
-      backgroundColor: t.card,
+      // 弹窗背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 16,
       padding: 20,
     },
@@ -956,7 +911,8 @@ const createStyles = (t: Theme) =>
     devBtnText: {color: t.text, fontSize: 14},
     devBtnTextPrimary: {color: '#fff', fontWeight: '700'},
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,
@@ -997,49 +953,4 @@ const createStyles = (t: Theme) =>
       alignItems: 'center',
     },
     sheetCancelText: {color: t.text, fontSize: 15},
-    // 目录浏览器
-    browseHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      marginBottom: 8,
-    },
-    browseUp: {color: t.primary, fontSize: 14, fontWeight: '700'},
-    browsePath: {flex: 1, color: t.sub, fontSize: 12},
-    browseLoading: {paddingVertical: 30, alignItems: 'center'},
-    sheetList: {flexGrow: 0, marginBottom: 4},
-    sheetEmpty: {
-      textAlign: 'center',
-      color: t.sub,
-      fontSize: 12,
-      paddingVertical: 24,
-    },
-    dirItem: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingVertical: 11,
-      gap: 10,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderColor: t.border,
-    },
-    dirIcon: {fontSize: 16},
-    dirName: {flex: 1, color: t.text, fontSize: 14},
-    dirArrow: {color: t.sub, fontSize: 18},
-    sheetPrimaryBtn: {
-      backgroundColor: t.primary,
-      borderRadius: 22,
-      paddingVertical: 11,
-      alignItems: 'center',
-      marginTop: 8,
-    },
-    sheetPrimaryText: {color: '#fff', fontSize: 15, fontWeight: '700'},
-    sheetOutlineBtn: {
-      marginTop: 10,
-      borderRadius: 22,
-      paddingVertical: 11,
-      alignItems: 'center',
-      borderWidth: 1,
-      borderColor: t.primary,
-    },
-    sheetOutlineText: {color: t.primary, fontSize: 15, fontWeight: '600'},
   });

@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   Switch,
+  Modal,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -37,8 +39,8 @@ export default function SleepTimerScreen({navigation}: any) {
   const styles = useMemo(() => createStyles(t), [t]);
   const [minutes, setMinutes] = useState(getSleepMinutes());
   const [remain, setRemain] = useState(getSleepRemaining());
-  const [customOpen, setCustomOpen] = useState(false);
   const [customMin, setCustomMin] = useState('');
+  const [customMinModal, setCustomMinModal] = useState(false);
   const [finishTrack, setFinishTrack] = useState(getSleepFinishTrack());
 
   // 每秒刷新倒计时
@@ -51,7 +53,6 @@ export default function SleepTimerScreen({navigation}: any) {
   }, []);
 
   const pick = (min: number) => {
-    setCustomOpen(false);
     if (min <= 0) {
       cancelSleepTimer();
     } else {
@@ -67,8 +68,9 @@ export default function SleepTimerScreen({navigation}: any) {
       AppAlert.alert('请输入有效的分钟数（1-1440）');
       return;
     }
-    setCustomMin('');
     pick(min);
+    setCustomMin('');
+    setCustomMinModal(false);
   };
 
   const isCustomActive = minutes > 0 && !PRESETS.includes(minutes);
@@ -111,7 +113,7 @@ export default function SleepTimerScreen({navigation}: any) {
       {/* 自定义 */}
       <TouchableOpacity
         style={styles.row}
-        onPress={() => setCustomOpen(v => !v)}>
+        onPress={() => setCustomMinModal(true)}>
         <Text style={[styles.rowLabel, isCustomActive && styles.rowActive]}>
           自定义
           {isCustomActive ? `（${minutes}分钟）` : ''}
@@ -121,23 +123,49 @@ export default function SleepTimerScreen({navigation}: any) {
         )}
         {isCustomActive && <Text style={styles.check}>✓</Text>}
       </TouchableOpacity>
-      {customOpen && (
-        <View style={styles.customRow}>
-          <TextInput
-            style={styles.customInput}
-            placeholder="输入分钟数（1-1440）"
-            placeholderTextColor={t.sub}
-            keyboardType="number-pad"
-            value={customMin}
-            onChangeText={setCustomMin}
-            onSubmitEditing={onCustom}
-            autoFocus
-          />
-          <TouchableOpacity style={styles.customBtn} onPress={onCustom}>
-            <Text style={styles.customBtnText}>确定</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+
+      {/* 自定义时间模态弹窗 */}
+      <Modal
+        visible={customMinModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCustomMinModal(false)}>
+        <TouchableWithoutFeedback onPress={() => setCustomMinModal(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>自定义定时分钟数</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="输入分钟数（1-1440）"
+                  placeholderTextColor={t.sub}
+                  keyboardType="number-pad"
+                  value={customMin}
+                  onChangeText={setCustomMin}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={onCustom}
+                />
+                <View style={styles.modalBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.modalBtnCancel]}
+                    onPress={() => {
+                      setCustomMin('');
+                      setCustomMinModal(false);
+                    }}>
+                    <Text style={styles.modalBtnCancelText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalBtn, styles.modalBtnConfirm]}
+                    onPress={onCustom}>
+                    <Text style={styles.modalBtnConfirmText}>确定</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
 
       {/* 到时行为：立即暂停 / 播完当前歌曲再暂停 */}
       <View style={[styles.row, styles.finishRow]}>
@@ -214,28 +242,65 @@ const createStyles = (t: Theme) =>
       fontSize: 18,
       fontWeight: '700',
     },
-    customRow: {
-      flexDirection: 'row',
-      gap: 10,
-      paddingHorizontal: 20,
-      paddingVertical: 12,
-    },
-    customInput: {
+    // 自定义时间模态弹窗
+    modalOverlay: {
       flex: 1,
-      backgroundColor: t.card,
-      borderRadius: 18,
-      paddingHorizontal: 14,
-      height: 40,
-      fontSize: 13,
-      color: t.text,
-    },
-    customBtn: {
-      backgroundColor: t.primary,
-      borderRadius: 18,
-      paddingHorizontal: 20,
+      backgroundColor: 'rgba(0,0,0,0.5)',
       justifyContent: 'center',
+      alignItems: 'center',
     },
-    customBtnText: {color: '#fff', fontSize: 14, fontWeight: '700'},
+    modalContent: {
+      width: '80%',
+      // 弹窗背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
+      borderRadius: 12,
+      padding: 20,
+      gap: 16,
+    },
+    modalTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: t.text,
+      textAlign: 'center',
+    },
+    modalInput: {
+      borderWidth: 1,
+      borderColor: t.border,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 16,
+      color: t.text,
+      backgroundColor: t.bg,
+      textAlign: 'center',
+    },
+    modalBtnRow: {
+      flexDirection: 'row',
+      gap: 12,
+      marginTop: 4,
+    },
+    modalBtn: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    modalBtnCancel: {
+      backgroundColor: t.cardLight,
+    },
+    modalBtnCancelText: {
+      fontSize: 15,
+      color: t.sub,
+      fontWeight: '600',
+    },
+    modalBtnConfirm: {
+      backgroundColor: t.primary,
+    },
+    modalBtnConfirmText: {
+      fontSize: 15,
+      color: '#fff',
+      fontWeight: '600',
+    },
     hint: {
       color: t.sub,
       fontSize: 12,

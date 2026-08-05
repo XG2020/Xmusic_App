@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   TextInput,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Image,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -37,6 +38,7 @@ import Icon from '../components/Icon';
 import {formatDuration} from '../utils/format';
 import {formatListen} from './PlaylistSquareScreen';
 import {useTheme, Theme} from '../theme';
+import {useSkin} from '../services/skin';
 
 const PAGE_SIZE = 30;
 
@@ -45,6 +47,15 @@ type SearchTab = 'song' | 'playlist';
 export default function SearchScreen({navigation, route}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const fromHomeSearch = !!route?.params?.fromHomeSearch;
+  // 首页搜索框先在上一页完成上移动画；本页只让其下方内容向下展开。
+  const bodyEntry = useRef(new Animated.Value(fromHomeSearch ? 0 : 1)).current;
+  const bodyTranslateY = bodyEntry.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-32, 0],
+  });
+  // 皮肤：搜索页背景图已提升到导航外层统一绘制，本页只在有背景图时改为透明承接。
+  const skin = useSkin();
   const [keyword, setKeyword] = useState('');
   // 结果分类：默认歌曲，可切换歌单（切换时懒加载对应类型结果）；
   // 从歌单页搜索入口进入时默认歌单分类
@@ -59,6 +70,8 @@ export default function SearchScreen({navigation, route}: any) {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // 分页加载失败（footer 显示点击重试）
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   // 歌单分类结果（独立分页）
   const [plResults, setPlResults] = useState<PlaylistInfo[]>([]);
   const [plPage, setPlPage] = useState(1);
@@ -67,6 +80,19 @@ export default function SearchScreen({navigation, route}: any) {
   const [history, setHistory] = useState<string[]>([]);
   // 已收藏歌单 id 集合（收藏/取消实时刷新）
   const favIds = useFavPlaylistIds();
+
+  useEffect(() => {
+    if (!fromHomeSearch) {
+      bodyEntry.setValue(1);
+      return;
+    }
+    bodyEntry.setValue(0);
+    Animated.timing(bodyEntry, {
+      toValue: 1,
+      duration: 240,
+      useNativeDriver: true,
+    }).start();
+  }, [bodyEntry, fromHomeSearch]);
 
   useEffect(() => {
     getSearchHistory().then(setHistory);
@@ -191,8 +217,10 @@ export default function SearchScreen({navigation, route}: any) {
         }
         setPlHasMore(pls.length >= PAGE_SIZE);
       }
+      setLoadMoreFailed(false);
     } catch (error) {
-      // 静默失败，继续滚动可重试
+      // 分页失败：footer 显示点击重试
+      setLoadMoreFailed(true);
     } finally {
       setLoadingMore(false);
     }
@@ -216,35 +244,41 @@ export default function SearchScreen({navigation, route}: any) {
 
   /** 歌曲结果行 */
   const renderSongItem = ({item, index}: {item: Song; index: number}) => (
-    <TouchableOpacity style={styles.item} onPress={() => playAt(index)}>
-      {item.coverUrl ? (
-        <Image
-          source={{uri: item.coverUrl}}
-          style={styles.cover}
-          resizeMethod="resize"
-        />
-      ) : (
-        <View style={[styles.cover, styles.coverFallback]}>
-          <Text style={styles.coverFallbackText}>♪</Text>
+    <View style={styles.item}>
+      {/* 主点击区与右侧「⋮」拆成兄弟节点，避免点按钮时误触发行点击 */}
+      <TouchableOpacity
+        style={styles.itemMain}
+        activeOpacity={0.7}
+        onPress={() => playAt(index)}>
+        {item.coverUrl ? (
+          <Image
+            source={{uri: item.coverUrl}}
+            style={styles.cover}
+            resizeMethod="resize"
+          />
+        ) : (
+          <View style={[styles.cover, styles.coverFallback]}>
+            <Text style={styles.coverFallbackText}>♪</Text>
+          </View>
+        )}
+        <View style={styles.itemInfo}>
+          <Text style={styles.title} numberOfLines={1}>
+            {item.title}
+          </Text>
+          <Text style={styles.sub} numberOfLines={1}>
+            {item.singer?.map(s => s.name).join(' / ')}
+            {item.album?.name ? ` · ${item.album.name}` : ''}
+          </Text>
         </View>
-      )}
-      <View style={styles.itemInfo}>
-        <Text style={styles.title} numberOfLines={1}>
-          {item.title}
-        </Text>
-        <Text style={styles.sub} numberOfLines={1}>
-          {item.singer?.map(s => s.name).join(' / ')}
-          {item.album?.name ? ` · ${item.album.name}` : ''}
-        </Text>
-      </View>
-      <Text style={styles.duration}>{formatDuration(item.interval)}</Text>
+        <Text style={styles.duration}>{formatDuration(item.interval)}</Text>
+      </TouchableOpacity>
       <TouchableOpacity
         style={styles.moreBtn}
         onPress={() => setActionSong(item)}
         hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
         <Icon name="more" size={16} style={styles.moreIcon} />
       </TouchableOpacity>
-    </TouchableOpacity>
+    </View>
   );
 
   /** 标题内关键词高亮（参考 QQ 音乐搜索结果样式） */
@@ -328,128 +362,145 @@ export default function SearchScreen({navigation, route}: any) {
   const listData: any[] = isSong ? results : plResults;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.searchBar}>
-        <TouchableOpacity style={styles.back} onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>‹</Text>
-        </TouchableOpacity>
-        <TextInput
-          style={styles.input}
-          placeholder={tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'}
-          placeholderTextColor={t.sub}
-          value={keyword}
-          onChangeText={setKeyword}
-          onSubmitEditing={onSearch}
-          returnKeyType="search"
-          autoFocus
-        />
-        <TouchableOpacity style={styles.searchBtn} onPress={onSearch}>
-          <Text style={styles.searchBtnText}>搜索</Text>
-        </TouchableOpacity>
-      </View>
+    <View style={[styles.container, !!skin.bg && styles.transparentBg]}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <View style={styles.searchBar}>
+          <TouchableOpacity style={styles.back} onPress={() => navigation.goBack()}>
+            <Text style={styles.backText}>‹</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={styles.input}
+            placeholder={tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'}
+            placeholderTextColor={t.sub}
+            value={keyword}
+            onChangeText={setKeyword}
+            onSubmitEditing={onSearch}
+            returnKeyType="search"
+            autoFocus
+          />
+          <TouchableOpacity style={styles.searchBtn} onPress={onSearch}>
+            <Text style={styles.searchBtnText}>搜索</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Animated.View
+          style={[
+            styles.body,
+            {opacity: bodyEntry, transform: [{translateY: bodyTranslateY}]},
+          ]}>
 
       {/* 结果分类 tab（文字+下划线风格）：歌曲 / 歌单，仅在发起搜索后显示 */}
-      {!!query && (
-        <View style={styles.typeTabs}>
-          <TouchableOpacity
-            style={styles.typeTab}
-            onPress={() => switchTab('song')}>
-            <Text
-              style={[styles.typeTabText, isSong && styles.typeTabTextActive]}>
-              歌曲
-            </Text>
-            <View style={[styles.typeTabLine, isSong && styles.typeTabLineOn]} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.typeTab}
-            onPress={() => switchTab('playlist')}>
-            <Text
-              style={[styles.typeTabText, !isSong && styles.typeTabTextActive]}>
-              歌单
-            </Text>
-            <View
-              style={[styles.typeTabLine, !isSong && styles.typeTabLineOn]}
-            />
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {isSong && results.length > 0 && (
-        <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
-          <Text style={styles.playAllIcon}>▶</Text>
-          <Text style={styles.playAllText}>播放全部 ({results.length})</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* 未发起搜索时展示历史记录 */}
-      {!loading && !query && history.length > 0 && (
-        <View style={styles.historyWrap}>
-          <View style={styles.historyHeader}>
-            <Text style={styles.historyTitle}>搜索历史</Text>
+        {!!query && (
+          <View style={styles.typeTabs}>
             <TouchableOpacity
-              onPress={onClearHistory}
-              hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-              <Icon name="garbage" size={30} color={t.sub} />
+              style={styles.typeTab}
+              onPress={() => switchTab('song')}>
+              <Text
+                style={[styles.typeTabText, isSong && styles.typeTabTextActive]}>
+                歌曲
+              </Text>
+              <View style={[styles.typeTabLine, isSong && styles.typeTabLineOn]} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.typeTab}
+              onPress={() => switchTab('playlist')}>
+              <Text
+                style={[styles.typeTabText, !isSong && styles.typeTabTextActive]}>
+                歌单
+              </Text>
+              <View
+                style={[styles.typeTabLine, !isSong && styles.typeTabLineOn]}
+              />
             </TouchableOpacity>
           </View>
-          <View style={styles.historyChips}>
-            {history.map(kw => (
+        )}
+
+        {isSong && results.length > 0 && (
+          <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
+            <Text style={styles.playAllIcon}>▶</Text>
+            <Text style={styles.playAllText}>播放全部 ({results.length})</Text>
+          </TouchableOpacity>
+        )}
+
+      {/* 未发起搜索时展示历史记录 */}
+        {!loading && !query && history.length > 0 && (
+          <View style={styles.historyWrap}>
+            <View style={styles.historyHeader}>
+              <Text style={styles.historyTitle}>搜索历史</Text>
               <TouchableOpacity
-                key={kw}
-                style={styles.historyChip}
-                onPress={() => onPickHistory(kw)}>
-                <Text style={styles.historyChipText} numberOfLines={1}>
-                  {kw}
-                </Text>
+                onPress={onClearHistory}
+                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                <Icon name="garbage" size={30} color={t.sub} />
               </TouchableOpacity>
-            ))}
+            </View>
+            <View style={styles.historyChips}>
+              {history.map(kw => (
+                <TouchableOpacity
+                  key={kw}
+                  style={styles.historyChip}
+                  onPress={() => onPickHistory(kw)}>
+                  <Text style={styles.historyChipText} numberOfLines={1}>
+                    {kw}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
-        </View>
-      )}
+        )}
 
-      {loading ? (
-        <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
-      ) : (
-        <FlatList
-          showsVerticalScrollIndicator={false}
-          data={listData}
-          keyExtractor={(item, i) =>
-            isSong
-              ? `${item.mid ?? item.title}-${i}`
-              : `${item.dissid}-${i}`
-          }
-          initialNumToRender={12}
-          maxToRenderPerBatch={16}
-          windowSize={9}
-          removeClippedSubviews
-          onEndReached={loadMore}
-          onEndReachedThreshold={0.3}
-          ListEmptyComponent={
-            query ? (
-              <Text style={styles.emptyText}>
-                {isSong ? '没有找到相关歌曲' : '没有找到相关歌单'}
-              </Text>
-            ) : null
-          }
-          ListFooterComponent={
-            loadingMore ? (
-              <ActivityIndicator style={styles.footerLoading} color={t.primary} />
-            ) : listData.length > 0 && !(isSong ? hasMore : plHasMore) ? (
-              <Text style={styles.footerEnd}>没有更多结果了</Text>
-            ) : null
-          }
-          renderItem={isSong ? renderSongItem : (renderPlItem as any)}
-        />
-      )}
+        {loading ? (
+          <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
+        ) : (
+          <FlatList
+            showsVerticalScrollIndicator={false}
+            data={listData}
+            keyExtractor={(item, i) =>
+              isSong
+                ? `${item.mid ?? item.title}-${i}`
+                : `${item.dissid}-${i}`
+            }
+            initialNumToRender={12}
+            maxToRenderPerBatch={16}
+            windowSize={9}
+            removeClippedSubviews
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.3}
+            ListEmptyComponent={
+              query ? (
+                <Text style={styles.emptyText}>
+                  {isSong ? '没有找到相关歌曲' : '没有找到相关歌单'}
+                </Text>
+              ) : null
+            }
+            ListFooterComponent={
+              loadingMore ? (
+                <ActivityIndicator style={styles.footerLoading} color={t.primary} />
+              ) : loadMoreFailed ? (
+                <TouchableOpacity style={styles.footerRetry} onPress={loadMore}>
+                  <Text style={styles.footerRetryText}>加载失败，点击重试</Text>
+                </TouchableOpacity>
+              ) : listData.length > 0 && !(isSong ? hasMore : plHasMore) ? (
+                <Text style={styles.footerEnd}>没有更多结果了</Text>
+              ) : null
+            }
+            renderItem={isSong ? renderSongItem : (renderPlItem as any)}
+          />
+        )}
 
-      <SongActionSheet song={actionSong} onClose={() => setActionSong(null)} />
-    </SafeAreaView>
+        </Animated.View>
+        <SongActionSheet song={actionSong} onClose={() => setActionSong(null)} />
+      </SafeAreaView>
+    </View>
   );
 }
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    // 皮肤模式容器透明，让导航外层的整屏背景贯穿页面与迷你播放条
+    transparentBg: {backgroundColor: 'transparent'},
+    safeArea: {flex: 1},
+    body: {flex: 1},
     searchBar: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -461,7 +512,8 @@ const createStyles = (t: Theme) =>
     backText: {fontSize: 30, color: t.text, lineHeight: 32},
     input: {
       flex: 1,
-      backgroundColor: t.card,
+      // 搜索框胶囊：开启面板色时随板块色（自定义色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 18,
       paddingHorizontal: 14,
       height: 38,
@@ -508,7 +560,8 @@ const createStyles = (t: Theme) =>
     historyTitle: {fontSize: 15, fontWeight: '700', color: t.text},
     historyChips: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
     historyChip: {
-      backgroundColor: t.card,
+      // 历史词胶囊：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 15,
       paddingHorizontal: 14,
       paddingVertical: 7,
@@ -529,6 +582,9 @@ const createStyles = (t: Theme) =>
       fontSize: 12,
       paddingVertical: 16,
     },
+    // 分页失败重试
+    footerRetry: {alignItems: 'center', paddingVertical: 16},
+    footerRetryText: {color: t.primary, fontSize: 13},
     item: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -536,6 +592,8 @@ const createStyles = (t: Theme) =>
       paddingLeft: 16,
       paddingRight: 4,
     },
+    // 行主点击区（占满左侧空间，与右侧按钮兄弟布局）
+    itemMain: {flex: 1, flexDirection: 'row', alignItems: 'center'},
     cover: {width: 44, height: 44, borderRadius: 6},
     coverFallback: {
       backgroundColor: t.card,

@@ -13,11 +13,70 @@ import {
   useDownloads,
   clearDownloadHistory,
   removeDownloadRecord,
+  cancelDownload,
+  pauseDownload,
+  resumeDownload,
   DownloadTask,
 } from '../services/downloadManager';
 import {openLocalFolder} from '../services/local';
+import Icon from '../components/Icon';
 import {qualityOption} from '../services/settings';
 import {useTheme, Theme} from '../theme';
+import {useSkin} from '../services/skin';
+
+function isSafUri(path?: string) {
+  return !!path && path.startsWith('content://');
+}
+
+function isSafDocumentUri(path?: string) {
+  return isSafUri(path) && !!path && path.includes('/document/');
+}
+
+function dirname(path: string) {
+  const idx = path.lastIndexOf('/');
+  return idx > 0 ? path.slice(0, idx) : path;
+}
+
+function decodeSafDocId(uri: string): string | null {
+  try {
+    const decoded = decodeURIComponent(uri);
+    const documentMatch = decoded.match(/\/document\/([^/?#]+)/);
+    if (documentMatch?.[1]) {
+      return documentMatch[1];
+    }
+    const treeMatch = decoded.match(/\/tree\/([^/?#]+)/);
+    return treeMatch?.[1] ?? null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function safDocIdToDisplayPath(docId: string, isFile = false): string {
+  let normalized = docId;
+  if (isFile) {
+    normalized = normalized.substring(0, normalized.lastIndexOf('/'));
+  }
+  if (normalized.startsWith('primary:')) {
+    const relative = normalized.slice('primary:'.length).replace(/^\/+/, '');
+    return relative ? `/storage/emulated/0/${relative}` : '/storage/emulated/0';
+  }
+  return normalized.replace(':', '/');
+}
+
+function getDisplayFolderPath(item: DownloadTask): string | null {
+  const target = item.folderPath || item.path;
+  if (!target) {
+    return null;
+  }
+  if (!isSafUri(target)) {
+    return item.folderPath || dirname(target);
+  }
+  const docId = decodeSafDocId(target);
+  if (!docId) {
+    return target;
+  }
+  return safDocIdToDisplayPath(docId, !item.folderPath);
+}
 
 function fmtTime(ts: number) {
   const d = new Date(ts);
@@ -33,6 +92,7 @@ function fmtTime(ts: number) {
 export default function DownloadScreen({navigation}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const skin = useSkin();
   const {active, history} = useDownloads();
 
   const sections = [
@@ -51,29 +111,78 @@ export default function DownloadScreen({navigation}: any) {
   };
 
   /** 打开文件所在文件夹（调用系统文件管理器，原生多级兜底） */
-  const openFolder = async (path: string) => {
-    const dir = path.slice(0, path.lastIndexOf('/'));
+  const openFolder = async (item: DownloadTask) => {
+    const {path, folderPath} = item;
+    if (!path) {
+      return;
+    }
+    const target = folderPath || path;
+    const dir = getDisplayFolderPath(item) ?? target;
     if (Platform.OS !== 'android') {
       AppAlert.alert('文件位置', dir);
       return;
     }
-    const ok = await openLocalFolder(path);
+    const ok = await openLocalFolder(target);
     if (!ok) {
       AppAlert.alert('无法打开文件管理器', `文件位于：\n${dir}`);
     }
   };
 
-  /** 长按下载记录：打开所在文件夹 / 删除记录（可连文件一起删） */
+  /** 长按下载记录：下载中/排队中可暂停/取消，已暂停可恢复/取消，已完成可打开文件夹/删除 */
   const onLongPressItem = (item: DownloadTask) => {
-    if (item.status === 'downloading') {
+    if (item.status === 'downloading' || item.status === 'queued') {
+      AppAlert.alert(
+        '下载任务',
+        `「${item.title}」${item.status === 'queued' ? '（排队中）' : ''}`,
+        [
+          {
+            text: '暂停下载',
+            onPress: () => pauseDownload(item.id),
+          },
+          {
+            text: '取消下载',
+            style: 'destructive',
+            onPress: () => cancelDownload(item.id),
+          },
+          {text: '取消', style: 'cancel'},
+        ],
+      );
+      return;
+    }
+    if (item.status === 'paused') {
+      AppAlert.alert('已暂停', `「${item.title}」`, [
+        {
+          text: '继续下载',
+          onPress: () =>
+            resumeDownload(item.id).then(ok => {
+              if (!ok) {
+                AppAlert.alert('无法恢复下载', '获取下载地址失败，请稍后重试');
+              }
+            }),
+        },
+        {
+          text: '取消下载',
+          style: 'destructive',
+          onPress: () => cancelDownload(item.id),
+        },
+        {text: '取消', style: 'cancel'},
+      ]);
       return;
     }
     const buttons: any[] = [];
-    if (item.status === 'done' && item.path) {
+    const canOpenFolder =
+      item.status === 'done' && !!(item.folderPath || item.path);
+    const canDeleteFile =
+      item.status === 'done' &&
+      !!item.path &&
+      (!isSafUri(item.path) || isSafDocumentUri(item.path));
+    if (canOpenFolder) {
       buttons.push({
         text: '打开所在文件夹',
-        onPress: () => openFolder(item.path!),
+        onPress: () => openFolder(item),
       });
+    }
+    if (canDeleteFile) {
       buttons.push({
         text: '删除记录和文件',
         style: 'destructive',
@@ -83,11 +192,38 @@ export default function DownloadScreen({navigation}: any) {
             {
               text: '删除',
               style: 'destructive',
-              onPress: () => removeDownloadRecord(item, true),
+              onPress: async () => {
+                try {
+                  await removeDownloadRecord(item, true);
+                } catch (e: any) {
+                  AppAlert.alert(
+                    '删除失败',
+                    e?.message ?? '文件删除失败，请检查目录权限后重试',
+                  );
+                }
+              },
             },
           ]);
         },
       });
+    }
+    if (item.status === 'done' && item.path && isSafUri(item.path) && !canDeleteFile) {
+      buttons.push({
+        text: '删除记录',
+        onPress: () => {
+          AppAlert.alert(
+            '旧下载记录',
+            '这条历史记录创建于修复前，仅保存了授权目录，无法精确定位到单个文件删除；可删除记录，文件请到系统文件管理器中手动处理。',
+            [
+              {text: '取消', style: 'cancel'},
+              {text: '删除记录', onPress: () => removeDownloadRecord(item, false)},
+            ],
+          );
+        },
+      });
+      buttons.push({text: '取消', style: 'cancel'});
+      AppAlert.alert(item.title, undefined, buttons);
+      return;
     }
     buttons.push({
       text: '删除记录',
@@ -99,6 +235,7 @@ export default function DownloadScreen({navigation}: any) {
 
   const renderItem = ({item}: {item: DownloadTask}) => {
     const pct = Math.round(item.progress * 100);
+    const displayFolderPath = getDisplayFolderPath(item);
     return (
       <TouchableOpacity
         style={styles.item}
@@ -121,35 +258,61 @@ export default function DownloadScreen({navigation}: any) {
               <Text style={styles.pct}>{pct}%</Text>
             </View>
           )}
+          {item.status === 'paused' && (
+            <Text style={styles.paused} numberOfLines={1}>
+              已暂停{pct > 0 ? ` · 已下载 ${pct}%` : ''}
+            </Text>
+          )}
           {item.status === 'error' && (
             <Text style={styles.error} numberOfLines={1}>
               失败：{item.error ?? '未知错误'}
             </Text>
           )}
-          {item.status === 'done' && !!item.path && (
+          {item.status === 'done' && !!displayFolderPath && (
             <Text style={styles.path} numberOfLines={1}>
-              {item.path}
+              {displayFolderPath}
             </Text>
           )}
         </View>
-        <Text
-          style={[
-            styles.status,
-            item.status === 'done' && styles.statusDone,
-            item.status === 'error' && styles.statusError,
-          ]}>
-          {item.status === 'downloading'
-            ? '⬇'
-            : item.status === 'done'
-            ? '✓'
-            : '✕'}
-        </Text>
+        {item.status === 'downloading' || item.status === 'queued' ? (
+          // 下载中/排队中：点击暂停
+          <TouchableOpacity
+            style={styles.statusBtn}
+            activeOpacity={0.6}
+            onPress={() => pauseDownload(item.id)}>
+            <Icon name="pause" size={16} color={t.primary} />
+          </TouchableOpacity>
+        ) : item.status === 'paused' ? (
+          // 已暂停：点击恢复下载
+          <TouchableOpacity
+            style={styles.statusBtn}
+            activeOpacity={0.6}
+            onPress={() =>
+              resumeDownload(item.id).then(ok => {
+                if (!ok) {
+                  AppAlert.alert('无法恢复下载', '获取下载地址失败，请稍后重试');
+                }
+              })
+            }>
+            <Icon name="play" size={16} color={t.sub} />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.statusIconWrap}>
+            <Icon
+              name={item.status === 'done' ? 'downloadFilled' : 'downloadOutline'}
+              size={18}
+              color={item.status === 'done' ? t.primary : '#E5484D'}
+            />
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>‹</Text>
@@ -182,6 +345,7 @@ export default function DownloadScreen({navigation}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    transparentBg: {backgroundColor: 'transparent'},
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -239,8 +403,8 @@ const createStyles = (t: Theme) =>
     barFill: {height: 3, backgroundColor: t.primary, borderRadius: 2},
     pct: {fontSize: 11, color: t.primary, width: 36, textAlign: 'right'},
     error: {fontSize: 11, color: '#E5484D', marginTop: 4},
-    path: {fontSize: 10, color: t.sub, marginTop: 4, opacity: 0.7},
-    status: {fontSize: 16, color: t.primary, paddingLeft: 12},
-    statusDone: {color: t.primary},
-    statusError: {color: '#E5484D'},
+    paused: {fontSize: 11, color: t.sub, marginTop: 4},
+    path: {fontSize: 11, color: t.sub, marginTop: 4},
+    statusBtn: {paddingLeft: 12, paddingVertical: 10},
+    statusIconWrap: {paddingLeft: 12, width: 30, alignItems: 'flex-end'},
   });

@@ -48,6 +48,8 @@ const MONO_ICONS = {
   miniList: require('../assets/icons/minibar_playlist.png'),
   miniListHl: require('../assets/icons/minibar_playlist_hl.png'),
   setting: require('../assets/icons/setting.png'),
+  // 「我的」页入口图标：手机为挖空白屏的彩色边框素材、耳机为单色素材，
+  // 两者均可按主题 tint 染色（手机只染边框，耳机整图染色）
   phone: require('../assets/icons/qsmart_phone.png'),
   headset: require('../assets/icons/qsmart_headset.png'),
 } as const;

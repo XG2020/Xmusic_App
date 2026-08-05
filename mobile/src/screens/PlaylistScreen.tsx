@@ -17,10 +17,12 @@ import {autoOpenPlayerEnabled} from '../services/settings';
 import {addRecentSongs, isFavPlaylist, toggleFavPlaylist} from '../services/store';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
+import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 
 export default function PlaylistScreen({navigation, route}: any) {
   const {t} = useTheme();
+  const skin = useSkin();
   const styles = useMemo(() => createStyles(t), [t]);
   // 从歌单搜索结果进入时带 id/name 参数，自动加载并隐藏手动输入行
   const routeId = route?.params?.id;
@@ -105,7 +107,7 @@ export default function PlaylistScreen({navigation, route}: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={[styles.container, !!skin.bg && styles.transparentBg]} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>‹</Text>
@@ -163,23 +165,29 @@ export default function PlaylistScreen({navigation, route}: any) {
           data={songs}
           keyExtractor={(item, i) => item.mid ?? `${item.title}-${i}`}
           renderItem={({item, index}) => (
-            <TouchableOpacity style={styles.item} onPress={() => playAt(index)}>
-              <Text style={styles.index}>{index + 1}</Text>
-              <View style={styles.itemInfo}>
-                <Text style={styles.title} numberOfLines={1}>
-                  {item.title}
-                </Text>
-                <Text style={styles.sub} numberOfLines={1}>
-                  {item.singer?.map(s => s.name).join(' / ')}
-                </Text>
-              </View>
+            <View style={styles.item}>
+              {/* 主点击区与右侧「⋮」拆成兄弟节点，避免点按钮时误触发行点击 */}
+              <TouchableOpacity
+                style={styles.itemMain}
+                activeOpacity={0.7}
+                onPress={() => playAt(index)}>
+                <Text style={styles.index}>{index + 1}</Text>
+                <View style={styles.itemInfo}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  <Text style={styles.sub} numberOfLines={1}>
+                    {item.singer?.map(s => s.name).join(' / ')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.moreBtn}
                 onPress={() => setActionSong(item)}
                 hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
                 <Icon name="more" size={16} style={styles.moreIcon} />
               </TouchableOpacity>
-            </TouchableOpacity>
+            </View>
           )}
         />
       )}
@@ -192,6 +200,7 @@ export default function PlaylistScreen({navigation, route}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1, backgroundColor: t.bg},
+    transparentBg: {backgroundColor: 'transparent'},
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -204,7 +213,8 @@ const createStyles = (t: Theme) =>
     row: {flexDirection: 'row', gap: 8, paddingHorizontal: 12},
     input: {
       flex: 1,
-      backgroundColor: t.card,
+      // 搜索框胶囊：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 18,
       paddingHorizontal: 14,
       height: 38,
@@ -248,6 +258,8 @@ const createStyles = (t: Theme) =>
       paddingLeft: 16,
       paddingRight: 4,
     },
+    // 行主点击区（占满左侧空间，与右侧按钮兄弟布局）
+    itemMain: {flex: 1, flexDirection: 'row', alignItems: 'center'},
     index: {width: 30, fontSize: 14, color: t.sub},
     itemInfo: {flex: 1},
     title: {fontSize: 15, fontWeight: '600', color: t.text},

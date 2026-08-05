@@ -5,7 +5,6 @@ import TrackPlayer, {
   State,
   Track,
 } from 'react-native-track-player';
-import {ToastAndroid} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {getPreferredSongUrls, getSongUrls} from './api';
 import {enrichLocalSong} from './download';
@@ -80,9 +79,20 @@ let playerReady = false;
 type PendingSession = {tracks: Track[]; index: number; position: number};
 let pendingRestore: PendingSession | null = null;
 const pendingRestoreSubs = new Set<() => void>();
+const queueSnapshotSubs = new Set<() => void>();
 
 function notifyPendingRestore() {
   pendingRestoreSubs.forEach(fn => {
+    try {
+      fn();
+    } catch (e) {
+      // 单个订阅者异常不影响其余
+    }
+  });
+}
+
+function notifyQueueSnapshot() {
+  queueSnapshotSubs.forEach(fn => {
     try {
       fn();
     } catch (e) {
@@ -96,6 +106,14 @@ export function subscribePendingRestore(fn: () => void): () => void {
   pendingRestoreSubs.add(fn);
   return () => {
     pendingRestoreSubs.delete(fn);
+  };
+}
+
+/** 订阅原生播放队列变化（建队/替换/清空等） */
+export function subscribeQueueSnapshot(fn: () => void): () => void {
+  queueSnapshotSubs.add(fn);
+  return () => {
+    queueSnapshotSubs.delete(fn);
   };
 }
 
@@ -253,7 +271,7 @@ export async function setupPlayer(): Promise<boolean> {
 export function songToTrack(s: Song): Track {
   return {
     id: s.mid ?? String(s.id ?? s.title),
-    url: s.url ?? s.localPath ?? '',
+    url: s.url ?? s.localPath ?? s.uri ?? '',
     title: s.title,
     artist: s.singer?.map(x => x.name).join(' / ') ?? '未知歌手',
     artwork: s.coverUrl,
@@ -270,6 +288,8 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   if (!ok) {
     return;
   }
+  // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
+  requestNotificationPermissionOnce();
   const startSong = songs[Math.min(Math.max(startIndex, 0), songs.length - 1)];
   const q = await getPlayQuality();
   // 播放在线内容前的网络门禁：无网提示 / 流量三选项弹窗，用户拒绝则不加载。
@@ -296,13 +316,6 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   if (!tracks.length) {
     return;
   }
-  // 无播放地址的歌曲（VIP 专属/已下架等）会被跳过，明确提示避免队列数与歌单数不一致的困惑
-  if (tracks.length < songs.length) {
-    ToastAndroid.show(
-      `${songs.length - tracks.length}首歌曲无播放地址已跳过（可能需要VIP或已下架）`,
-      ToastAndroid.SHORT,
-    );
-  }
   await TrackPlayer.reset();
   await TrackPlayer.add(tracks);
   // v4: skip 按队列下标
@@ -317,6 +330,24 @@ export async function playSongs(songs: Song[], startIndex = 0) {
 
 /** 占位直链：歌曲已入队但地址还未解析（后台替换后可播放） */
 export const PENDING_URL = 'https://pending.invalid/resolving.mp3';
+
+// 通知权限请求只需一次（Android 13+）；用 require 延迟加载避免与 LocalScreen
+// 循环依赖（tsconfig module=es2015 不支持动态 import()，metro 下 require 等价）
+let notificationAsked = false;
+function requestNotificationPermissionOnce() {
+  if (notificationAsked) {
+    return;
+  }
+  notificationAsked = true;
+  (async () => {
+    try {
+      const mod = require('../screens/LocalScreen') as typeof import('../screens/LocalScreen');
+      await mod.ensureNotificationPermission();
+    } catch (e) {
+      // 请求失败不影响播放
+    }
+  })();
+}
 
 /**
  * 优先解析指定占位曲目（用户手动切到还没解析到的歌时调用），
@@ -385,6 +416,8 @@ export async function playSongsProgressive(
   if (!ok) {
     return false;
   }
+  // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
+  requestNotificationPermissionOnce();
   // 播放在线内容前的网络门禁：无网提示 / 流量三选项弹窗，用户拒绝则不加载
   const startSong = songs[Math.min(Math.max(startIndex, 0), songs.length - 1)];
   // 当前播放音质：用于匹配已整曲缓存的本地文件
@@ -420,8 +453,6 @@ export async function playSongsProgressive(
   if (!firstTracks.length) {
     return false;
   }
-  let skipped = firstBatch.length - firstTracks.length;
-
   // 其余歌曲立即以占位入队：本地路径/旧直链可直接播，否则挂占位地址等待替换
   const rest = ordered.slice(FIRST);
   pendingMap.clear();
@@ -444,16 +475,7 @@ export async function playSongsProgressive(
   // 新队列建立后立即保存会话快照（不等切歌事件），重启可恢复
   saveQueueSnapshot().catch(() => {});
 
-  const finishToast = () => {
-    if (skipped > 0 && session === enqueueSession) {
-      ToastAndroid.show(
-        `${skipped}首歌曲无播放地址已跳过（可能需要VIP或已下架）`,
-        ToastAndroid.SHORT,
-      );
-    }
-  };
   if (!rest.length) {
-    finishToast();
     return true;
   }
 
@@ -486,6 +508,14 @@ export async function playSongsProgressive(
       if (session !== enqueueSession) {
         return;
       }
+      const queue = (await TrackPlayer.getQueue()) as any[];
+      const pendingIndex = new Map<string, number>();
+      queue.forEach((t, qi) => {
+        if (t.pendingKey) {
+          pendingIndex.set(t.pendingKey, qi);
+        }
+      });
+      const active = await TrackPlayer.getActiveTrackIndex();
       for (let k = 0; k < batch.length; k++) {
         if (session !== enqueueSession) {
           return;
@@ -496,19 +526,21 @@ export async function playSongsProgressive(
           continue; // 该曲正在被优先解析，交给 resolvePendingTrack 处理
         }
         try {
-          const queue = (await TrackPlayer.getQueue()) as any[];
-          const qIdx = queue.findIndex(t => t.pendingKey === key);
+          const qIdx = pendingIndex.get(key) ?? -1;
           if (qIdx < 0) {
             pendingMap.delete(key);
             continue; // 已被优先解析替换或用户手动移出队列
           }
-          const active = await TrackPlayer.getActiveTrackIndex();
           if (!fresh) {
             // 解析不到地址（VIP/下架）：从队列移除；正在播放的留给缺失跳过逻辑
             if (qIdx !== active) {
               await TrackPlayer.remove(qIdx);
+              pendingIndex.forEach((idx2, key2) => {
+                if (idx2 > qIdx) {
+                  pendingIndex.set(key2, idx2 - 1);
+                }
+              });
               pendingMap.delete(key);
-              skipped += 1;
             }
             continue;
           }
@@ -531,14 +563,13 @@ export async function playSongsProgressive(
       // 每批替换完成后刷新快照：快照里的占位地址逐批变成可恢复的直链
       saveQueueSnapshot().catch(() => {});
     }
-    finishToast();
   })();
   return true;
 }
 
 export async function togglePlay() {
   const {state} = await TrackPlayer.getPlaybackState();
-  if (state === 'playing') {
+  if (state === State.Playing) {
     await TrackPlayer.pause();
     return;
   }
@@ -630,7 +661,17 @@ export async function skipToPrevious() {
 }
 
 export async function seekTo(position: number) {
-  await TrackPlayer.seekTo(position);
+  const nextPosition = Math.max(0, position);
+  // 冷启动恢复的会话在用户首次点播放前尚未灌入原生播放器。此时如果仍对
+  // TrackPlayer.seekTo 调用，定位会落在空队列上；随后 materialize 又按旧快照
+  // 加载，表现为进度条在点播放后跳回原位置。先更新快照即可保留用户的定位。
+  if (pendingRestore) {
+    pendingRestore.position = nextPosition;
+    notifyPendingRestore();
+    await savePlayPosition(nextPosition);
+    return;
+  }
+  await TrackPlayer.seekTo(nextPosition);
 }
 
 /** 插入到当前曲目之后（下一曲播放），必要时先解析直链 */
@@ -667,10 +708,12 @@ export async function playNext(song: Song): Promise<boolean> {
   if (!queue.length) {
     await TrackPlayer.add(track);
     await TrackPlayer.play();
+    saveQueueSnapshot().catch(() => {});
     return true;
   }
   const current = (await TrackPlayer.getActiveTrackIndex()) ?? 0;
   await TrackPlayer.add(track, current + 1);
+  saveQueueSnapshot().catch(() => {});
   return true;
 }
 
@@ -717,6 +760,8 @@ export async function saveQueueSnapshot() {
   try {
     const queue = (await TrackPlayer.getQueue()) as any[];
     if (!queue.length) {
+      await AsyncStorage.removeItem(K_LAST_QUEUE).catch(() => {});
+      notifyQueueSnapshot();
       return;
     }
     const index = (await TrackPlayer.getActiveTrackIndex()) ?? 0;
@@ -730,6 +775,7 @@ export async function saveQueueSnapshot() {
       mid: t.mid,
     }));
     await AsyncStorage.setItem(K_LAST_QUEUE, JSON.stringify({tracks, index}));
+    notifyQueueSnapshot();
   } catch (e) {
     // 保存失败不影响播放
   }
@@ -774,8 +820,10 @@ export async function restoreLastSession(): Promise<boolean> {
     if (!tracks?.length) {
       return false;
     }
-    // 收集在线曲目的 mid 重新解析直链（过期兜底：解析失败沿用旧链）
+    // 只刷新当前曲目附近少量在线直链（当前及前后 2 首），其余保留旧 URL，避免冷启动批量请求拖慢恢复。
+    const center = Math.min(Math.max(index ?? 0, 0), tracks.length - 1);
     const onlineMids = tracks
+      .slice(Math.max(center - 2, 0), Math.min(center + 3, tracks.length))
       .filter(t => t.mid && /^https?:/i.test(t.url))
       .map(t => String(t.mid));
     let fresh: Record<string, string | undefined> = {};

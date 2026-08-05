@@ -6,12 +6,12 @@ import {
   TouchableOpacity,
   FlatList,
   StyleSheet,
-  Modal,
   Clipboard,
   ToastAndroid,
   Platform,
 } from 'react-native';
 import {AppAlert} from './AppDialog';
+import AnimatedBottomSheetModal from './AnimatedBottomSheetModal';
 import {playNext} from '../services/player';
 import {startDownload} from '../services/downloadManager';
 import {
@@ -40,6 +40,8 @@ type Props = {
   onChanged?: () => void;
   /** 场景专属操作（如删除本地文件、从歌单移除），显示在通用操作之后 */
   extraActions?: SongAction[];
+  /** 是否显示下载入口，默认显示 */
+  showDownloadAction?: boolean;
 };
 
 /**
@@ -50,6 +52,7 @@ export default function SongActionSheet({
   onClose,
   onChanged,
   extraActions,
+  showDownloadAction = true,
 }: Props) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
@@ -133,7 +136,7 @@ export default function SongActionSheet({
     onClose();
     const ok = await startDownload(song);
     if (ok) {
-      AppAlert.alert('已开始下载', '进度可在「下载管理」中查看');
+      ToastAndroid.show('已开始下载，进度可在下载管理中查看', ToastAndroid.SHORT);
     } else {
       AppAlert.alert('无法下载', '该歌曲正在下载中或没有可用地址');
     }
@@ -156,144 +159,168 @@ export default function SongActionSheet({
   };
 
   return (
-    <Modal
+    <AnimatedBottomSheetModal
       visible={!!song}
-      transparent
-      statusBarTranslucent
-      animationType="slide"
-      onRequestClose={onClose}>
-      <TouchableOpacity
-        style={styles.mask}
-        activeOpacity={1}
-        onPress={onClose}>
-        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
-          <Text style={styles.songTitle} numberOfLines={1}>
-            {song?.title}
-            {song?.singer?.length ? (
-              <Text style={styles.songArtist}>
-                {'  '}
-                {song.singer.map(s => s.name).join(' / ')}
-              </Text>
-            ) : null}
-          </Text>
+      onClose={onClose}
+      sheetStyle={styles.sheet}>
+      <View>
+        <Text style={styles.songTitle} numberOfLines={1}>
+          {song?.title}
+          {song?.singer?.length ? (
+            <Text style={styles.songArtist}>
+              {'  '}
+              {song.singer.map(s => s.name).join(' / ')}
+            </Text>
+          ) : null}
+        </Text>
 
-          {panel === 'main' ? (
-            <>
-              <TouchableOpacity style={styles.item} onPress={onPlayNext}>
-                <Text style={styles.itemIcon}>▶</Text>
-                <Text style={styles.itemLabel}>下一曲播放</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.item} onPress={onToggleFav}>
-                <Text style={[styles.itemIcon, fav && styles.favActive]}>
-                  {fav ? '♥' : '♡'}
-                </Text>
-                <Text style={styles.itemLabel}>
-                  {fav ? '取消收藏' : '收藏到"我喜欢"'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.item} onPress={openPlaylists}>
-                <Text style={styles.itemIcon}>＋</Text>
-                <Text style={styles.itemLabel}>添加到歌单…</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.item} onPress={onDownloadSong}>
+        {panel === 'main' ? (
+          <>
+            <TouchableOpacity
+              style={styles.item}
+              onPress={onPlayNext}
+              accessibilityRole="button"
+              accessibilityLabel={`下一曲播放${song?.title ?? ''}`}>
+              <Text style={styles.itemIcon}>▶</Text>
+              <Text style={styles.itemLabel}>下一曲播放</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.item}
+              onPress={onToggleFav}
+              accessibilityRole="button"
+              accessibilityLabel={fav ? '取消收藏' : '收藏到我喜欢'}
+              accessibilityState={{selected: fav}}>
+              <Text style={[styles.itemIcon, fav && styles.favActive]}>
+                {fav ? '♥' : '♡'}
+              </Text>
+              <Text style={styles.itemLabel}>
+                {fav ? '取消收藏' : '收藏到"我喜欢"'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.item}
+              onPress={openPlaylists}
+              accessibilityRole="button"
+              accessibilityLabel="添加到歌单">
+              <Text style={styles.itemIcon}>＋</Text>
+              <Text style={styles.itemLabel}>添加到歌单…</Text>
+            </TouchableOpacity>
+            {showDownloadAction && (
+              <TouchableOpacity
+                style={styles.item}
+                onPress={onDownloadSong}
+                accessibilityRole="button"
+                accessibilityLabel={`下载${song?.title ?? ''}`}>
                 <View style={styles.itemIconWrap}>
                   <Icon name="downloadFilled" size={22} color={t.primary} />
                 </View>
                 <Text style={styles.itemLabel}>下载</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.item} onPress={onCopyName}>
-                <Text style={styles.itemIcon}>⧉</Text>
-                <Text style={styles.itemLabel}>复制歌名</Text>
-              </TouchableOpacity>
-              {extraActions?.map(a => (
-                <TouchableOpacity
-                  key={a.label}
-                  style={styles.item}
-                  onPress={() => {
-                    onClose();
-                    a.onPress();
-                  }}>
-                  {a.destructive ? (
-                    // 垃圾桶用单色素材红色着色，与菜单内其他单色图标风格统一
-                    <View style={styles.itemIconWrap}>
-                      <Icon name="garbage" size={32} color="#E5484D" />
-                    </View>
-                  ) : (
-                    <Text style={styles.itemIcon}>·</Text>
-                  )}
-                  <Text
-                    style={[
-                      styles.itemLabel,
-                      a.destructive && styles.destructive,
-                    ]}>
-                    {a.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </>
-          ) : (
-            <>
-              <FlatList
-                showsVerticalScrollIndicator={false}
-                data={playlists}
-                keyExtractor={p => p.id}
-                style={styles.plList}
-                ListEmptyComponent={
-                  <Text style={styles.plEmpty}>暂无歌单，可在下方新建</Text>
-                }
-                renderItem={({item}) => (
-                  <TouchableOpacity
-                    style={styles.item}
-                    onPress={() => onAddTo(item)}>
-                    <Text style={styles.itemIcon}>📃</Text>
-                    <Text style={styles.itemLabel} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.plCount}>{item.songs.length} 首</Text>
-                  </TouchableOpacity>
-                )}
-              />
-              <View style={styles.createRow}>
-                <TextInput
-                  style={styles.createInput}
-                  placeholder="新建歌单名称"
-                  placeholderTextColor={t.sub}
-                  value={newName}
-                  onChangeText={setNewName}
-                  onSubmitEditing={onCreateAndAdd}
-                />
-                <TouchableOpacity
-                  style={styles.createBtn}
-                  onPress={onCreateAndAdd}>
-                  <Text style={styles.createBtnText}>新建</Text>
-                </TouchableOpacity>
-              </View>
+            )}
+            <TouchableOpacity
+              style={styles.item}
+              onPress={onCopyName}
+              accessibilityRole="button"
+              accessibilityLabel="复制歌名">
+              <Text style={styles.itemIcon}>⧉</Text>
+              <Text style={styles.itemLabel}>复制歌名</Text>
+            </TouchableOpacity>
+            {extraActions?.map(a => (
               <TouchableOpacity
-                style={styles.backBtn}
-                onPress={() => setPanel('main')}>
-                <Text style={styles.backBtnText}>‹ 返回</Text>
+                key={a.label}
+                style={styles.item}
+                onPress={() => {
+                  onClose();
+                  a.onPress();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={a.label}>
+                {a.destructive ? (
+                  // 垃圾桶用单色素材红色着色，与菜单内其他单色图标风格统一
+                  <View style={styles.itemIconWrap}>
+                    <Icon name="garbage" size={32} color="#E5484D" />
+                  </View>
+                ) : (
+                  <Text style={styles.itemIcon}>·</Text>
+                )}
+                <Text
+                  style={[
+                    styles.itemLabel,
+                    a.destructive && styles.destructive,
+                  ]}>
+                  {a.label}
+                </Text>
               </TouchableOpacity>
-            </>
-          )}
+            ))}
+          </>
+        ) : (
+          <>
+            <FlatList
+              showsVerticalScrollIndicator={false}
+              data={playlists}
+              keyExtractor={p => p.id}
+              style={styles.plList}
+              ListEmptyComponent={
+                <Text style={styles.plEmpty}>暂无歌单，可在下方新建</Text>
+              }
+              renderItem={({item}) => (
+                <TouchableOpacity
+                  style={styles.item}
+                  onPress={() => onAddTo(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`添加到歌单${item.name}`}>
+                  <Text style={styles.itemIcon}>📃</Text>
+                  <Text style={styles.itemLabel} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  <Text style={styles.plCount}>{item.songs.length} 首</Text>
+                </TouchableOpacity>
+              )}
+            />
+            <View style={styles.createRow}>
+              <TextInput
+                style={styles.createInput}
+                placeholder="新建歌单名称"
+                placeholderTextColor={t.sub}
+                value={newName}
+                onChangeText={setNewName}
+                onSubmitEditing={onCreateAndAdd}
+              />
+              <TouchableOpacity
+                style={styles.createBtn}
+                onPress={onCreateAndAdd}
+                accessibilityRole="button"
+                accessibilityLabel="新建歌单">
+                <Text style={styles.createBtnText}>新建</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={styles.backBtn}
+              onPress={() => setPanel('main')}
+              accessibilityRole="button"
+              accessibilityLabel="返回上一级菜单">
+              <Text style={styles.backBtnText}>‹ 返回</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
-          <TouchableOpacity style={styles.cancel} onPress={onClose}>
-            <Text style={styles.cancelText}>取消</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
-    </Modal>
+        <TouchableOpacity
+          style={styles.cancel}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="关闭操作菜单">
+          <Text style={styles.cancelText}>取消</Text>
+        </TouchableOpacity>
+      </View>
+    </AnimatedBottomSheetModal>
   );
 }
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
-    mask: {
-      flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.55)',
-      justifyContent: 'flex-end',
-    },
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,

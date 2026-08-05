@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   PanResponder,
   Modal,
   FlatList,
+  ToastAndroid,
 } from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import TrackPlayer, {
@@ -31,6 +32,7 @@ import {
   getPendingRestoreIndex,
   materializePendingSession,
   subscribePendingRestore,
+  subscribeQueueSnapshot,
 } from '../services/player';
 import {getSwipeHintSeen, markSwipeHintSeen} from '../services/settings';
 import {useSpin} from '../utils/useSpin';
@@ -50,7 +52,7 @@ const RING_THICKNESS = 2.5;
 
 /**
  * 圆形进度环（纯 View 实现，无 SVG 依赖）：
- * 灰色圆形底 + 绿色圆弧表示播放进度，用左右两个半圆遮罩窗口旋转半圆盘扇形填充
+ * 灰色圆形底 + 主题色圆弧表示播放进度，用左右两个半圆遮罩窗口旋转半圆盘扇形填充
  */
 function ProgressRing({
   progress,
@@ -70,13 +72,13 @@ function ProgressRing({
   const secondDeg = Math.max(deg - 180, 0);
   return (
     <View style={[ringStyles.wrap, {backgroundColor: trackColor}]}>
-      {/* 右半窗口：0~180° 扇形 */}
+      {/* 右半窗口：0~180° 扇形（无进度时置透明，避免 0° 时半圆边缘贴合裁剪边界出现竖线） */}
       <View style={ringStyles.rightWrap}>
         <View
           style={[
             ringStyles.leftHalfDisc,
             {
-              backgroundColor: color,
+              backgroundColor: firstDeg > 0 ? color : 'transparent',
               transform: [
                 {translateX: RING_HALF / 2},
                 {rotate: `${firstDeg}deg`},
@@ -231,11 +233,55 @@ export default function MiniPlayer() {
   const [queueSheet, setQueueSheet] = useState(false);
   const [queue, setQueue] = useState<Track[]>([]);
   const [activeIdx, setActiveIdx] = useState(-1);
+  const [queueLoading, setQueueLoading] = useState(false);
   // 弹层自绘动画：遮罩淡入 + 面板上滑（Modal 内置 slide 会连遮罩一起滑，观感差）
   const sheetAnim = useRef(new Animated.Value(0)).current;
+  const queueSheetTicket = useRef(0);
+  const refreshQueueSheet = useCallback(async (ticket = queueSheetTicket.current) => {
+    if (hasPendingRestore()) {
+      if (queueSheetTicket.current !== ticket) {
+        return;
+      }
+      setQueue(getPendingRestoreTracks());
+      setActiveIdx(getPendingRestoreIndex());
+      setQueueLoading(false);
+      return;
+    }
+    try {
+      const [nextQueue, nextActiveIdx] = await Promise.all([
+        TrackPlayer.getQueue(),
+        TrackPlayer.getActiveTrackIndex(),
+      ]);
+      if (queueSheetTicket.current !== ticket) {
+        return;
+      }
+      setQueue(nextQueue);
+      setActiveIdx(nextActiveIdx ?? -1);
+    } catch (e) {
+      if (queueSheetTicket.current !== ticket) {
+        return;
+      }
+      setQueue([]);
+      setActiveIdx(-1);
+    } finally {
+      if (queueSheetTicket.current === ticket) {
+        setQueueLoading(false);
+      }
+    }
+  }, []);
   const openQueueSheet = () => {
+    const ticket = ++queueSheetTicket.current;
+    setQueueLoading(true);
+    if (hasPendingRestore()) {
+      setQueue(getPendingRestoreTracks());
+      setActiveIdx(getPendingRestoreIndex());
+    } else {
+      setQueue([]);
+      setActiveIdx(-1);
+    }
     sheetAnim.setValue(0);
     setQueueSheet(true);
+    refreshQueueSheet(ticket);
   };
   // Modal 挂载完成后再起动画，避免丢帧闪现
   const onSheetShow = () => {
@@ -247,12 +293,18 @@ export default function MiniPlayer() {
     }).start();
   };
   const closeQueueSheet = () => {
+    const ticket = ++queueSheetTicket.current;
+    setQueueLoading(false);
     Animated.timing(sheetAnim, {
       toValue: 0,
       duration: 160,
       easing: Easing.in(Easing.cubic),
       useNativeDriver: true,
-    }).start(() => setQueueSheet(false));
+    }).start(({finished}) => {
+      if (finished && queueSheetTicket.current === ticket) {
+        setQueueSheet(false);
+      }
+    });
   };
 
   const playing = playback.state === State.Playing;
@@ -275,26 +327,23 @@ export default function MiniPlayer() {
     }
   };
 
-  // 弹层打开期间跟随当前曲目刷新队列与高亮
+  // 弹层打开期间订阅队列变化：建队、渐进式替换、手动移除/清空都要实时刷新
   useEffect(() => {
     if (!queueSheet) {
       return;
     }
-    (async () => {
-      try {
-        // 延迟恢复未落地时，队列弹层回退显示快照队列（与迷你条显示保持一致）
-        if (hasPendingRestore()) {
-          setQueue(getPendingRestoreTracks());
-          setActiveIdx(getPendingRestoreIndex());
-          return;
-        }
-        setQueue(await TrackPlayer.getQueue());
-        setActiveIdx((await TrackPlayer.getActiveTrackIndex()) ?? -1);
-      } catch (e) {
-        setQueue([]);
-      }
-    })();
-  }, [queueSheet, track]);
+    const runRefresh = () => {
+      setQueueLoading(true);
+      refreshQueueSheet(queueSheetTicket.current);
+    };
+    runRefresh();
+    const unsubPending = subscribePendingRestore(runRefresh);
+    const unsubQueue = subscribeQueueSnapshot(runRefresh);
+    return () => {
+      unsubPending();
+      unsubQueue();
+    };
+  }, [queueSheet, refreshQueueSheet]);
 
   const playQueueItem = async (index: number) => {
     try {
@@ -304,7 +353,7 @@ export default function MiniPlayer() {
       await TrackPlayer.play();
       setActiveIdx(index);
     } catch (e) {
-      // 队列越界忽略
+      ToastAndroid.show('播放队列操作失败', ToastAndroid.SHORT);
     }
   };
 
@@ -366,7 +415,9 @@ export default function MiniPlayer() {
       <TouchableOpacity
         style={styles.left}
         activeOpacity={0.9}
-        onPress={() => navigation.navigate('Player')}>
+        onPress={() => navigation.navigate('Player')}
+        accessibilityRole="button"
+        accessibilityLabel={`打开播放页，当前播放${track.title ?? '未知歌曲'}`}>
         <Animated.View style={[styles.cover, {transform: [{rotate}]}]}>
           {track.artwork ? (
             <Image source={{uri: String(track.artwork)}} style={styles.coverImg} />
@@ -398,12 +449,16 @@ export default function MiniPlayer() {
         style={styles.ctrl}
         onPress={() => {
           playing ? TrackPlayer.pause() : resumeUser();
-        }}>
-        {/* 圆形进度环：灰底 + 绿色进度圆弧（自订阅进度，不带动整条重渲） */}
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={playing ? '暂停' : '播放'}
+        accessibilityState={{selected: playing}}>
+        {/* 圆形进度环：灰底 + 主题色进度圆弧（自订阅进度，不带动整条重渲）
+        内圆背景与条底色一致（跟随板块颜色与透明度），图标用主题色 */}
         <PlayProgressRing
           color={t.primary}
           trackColor={t.isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.15)'}
-          innerColor={t.card}
+          innerColor={t.miniBar}
           fallbackPosition={!nativeTrack ? pendingProgress.position : 0}
           fallbackDuration={!nativeTrack ? pendingProgress.duration : 0}>
           {/* 高清播控图标：pause 居中；play 三角素材自带右偏校正视觉居中 */}
@@ -414,7 +469,12 @@ export default function MiniPlayer() {
           )}
         </PlayProgressRing>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.listBtn} onPress={openQueueSheet}>
+      <TouchableOpacity
+        style={styles.listBtn}
+        onPress={openQueueSheet}
+        accessibilityRole="button"
+        accessibilityLabel="打开当前播放队列"
+        accessibilityState={{selected: queueSheet}}>
         {/* 播放列表图标（logo 素材，弹层打开时高亮） */}
         <Icon
           name={queueSheet ? 'miniListHl' : 'miniList'}
@@ -454,57 +514,69 @@ export default function MiniPlayer() {
               <Text style={styles.sheetTitle}>
                 当前播放 ({queue.length})
               </Text>
-              <FlatList
-                showsVerticalScrollIndicator={false}
-                data={queue}
-                keyExtractor={(item, i) => `${item.id ?? item.title}-${i}`}
-                style={styles.queueList}
-                initialScrollIndex={
-                  activeIdx > 4 && queue.length > 8 ? activeIdx - 2 : 0
-                }
-                getItemLayout={(_, index) => ({
-                  length: 44,
-                  offset: 44 * index,
-                  index,
-                })}
-                initialNumToRender={12}
-                maxToRenderPerBatch={16}
-                windowSize={7}
-                removeClippedSubviews
-                ListEmptyComponent={
-                  <Text style={styles.queueEmpty}>播放队列为空</Text>
-                }
-                renderItem={({item, index}) => {
-                  const active = index === activeIdx;
-                  return (
-                    <TouchableOpacity
-                      style={styles.queueItem}
-                      onPress={() => playQueueItem(index)}>
-                      <Text
-                        style={[styles.queueNo, active && styles.queueActive]}>
-                        {active ? '♪' : index + 1}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.queueTitle,
-                          active && styles.queueActive,
-                        ]}
-                        numberOfLines={1}>
-                        {item.title}
-                        {item.artist ? (
-                          <Text style={styles.queueArtist}>
-                            {'  '}
-                            {item.artist}
-                          </Text>
-                        ) : null}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                }}
-              />
+              {!queueLoading || queue.length > 0 ? (
+                <FlatList
+                  showsVerticalScrollIndicator={false}
+                  data={queue}
+                  extraData={activeIdx}
+                  keyExtractor={(item, i) => `${item.id ?? item.title}-${i}`}
+                  style={styles.queueList}
+                  initialScrollIndex={
+                    activeIdx > 4 && queue.length > 8 ? activeIdx - 2 : 0
+                  }
+                  getItemLayout={(_, index) => ({
+                    length: 44,
+                    offset: 44 * index,
+                    index,
+                  })}
+                  initialNumToRender={10}
+                  maxToRenderPerBatch={10}
+                  updateCellsBatchingPeriod={50}
+                  windowSize={5}
+                  removeClippedSubviews
+                  ListEmptyComponent={
+                    <Text style={styles.queueEmpty}>播放队列为空</Text>
+                  }
+                  renderItem={({item, index}) => {
+                    const active = index === activeIdx;
+                    return (
+                      <TouchableOpacity
+                        style={styles.queueItem}
+                        onPress={() => playQueueItem(index)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`播放队列第${index + 1}首，${item.title ?? ''}`}>
+                        <Text
+                          style={[styles.queueNo, active && styles.queueActive]}>
+                          {active ? '♪' : index + 1}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.queueTitle,
+                            active && styles.queueActive,
+                          ]}
+                          numberOfLines={1}>
+                          {item.title}
+                          {item.artist ? (
+                            <Text style={styles.queueArtist}>
+                              {'  '}
+                              {item.artist}
+                            </Text>
+                          ) : null}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  }}
+                />
+              ) : (
+                <View style={styles.queueLoadingWrap}>
+                  <Text style={styles.queueEmpty}>正在载入播放队列...</Text>
+                </View>
+              )}
               <TouchableOpacity
                 style={styles.sheetCancel}
-                onPress={closeQueueSheet}>
+                onPress={closeQueueSheet}
+                accessibilityRole="button"
+                accessibilityLabel="关闭播放队列">
                 <Text style={styles.sheetCancelText}>关闭</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -520,7 +592,8 @@ const createStyles = (t: Theme) =>
     bar: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: t.card,
+      // 迷你播放条底色：板块色开启时跟随板块颜色与透明度，关闭时回退卡片色不透明
+      backgroundColor: t.miniBar,
       paddingHorizontal: 12,
       paddingVertical: 8,
       borderTopWidth: StyleSheet.hairlineWidth,
@@ -544,7 +617,7 @@ const createStyles = (t: Theme) =>
     info: {},
     title: {fontSize: 14, fontWeight: '600', color: t.text},
     artist: {fontSize: 12, fontWeight: '400', color: t.sub},
-    swipeHint: {fontSize: 10, color: t.sub, marginTop: 2, opacity: 0.7},
+    swipeHint: {fontSize: 11, color: t.sub, marginTop: 2},
     ctrl: {
       width: 34,
       height: 34,
@@ -569,7 +642,8 @@ const createStyles = (t: Theme) =>
       justifyContent: 'flex-end',
     },
     sheet: {
-      backgroundColor: t.card,
+      // 弹层背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
       paddingTop: 16,
@@ -586,6 +660,11 @@ const createStyles = (t: Theme) =>
       marginBottom: 8,
     },
     queueList: {flexGrow: 0},
+    queueLoadingWrap: {
+      minHeight: 220,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     queueEmpty: {
       textAlign: 'center',
       color: t.sub,

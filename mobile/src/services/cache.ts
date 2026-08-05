@@ -8,7 +8,35 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 type Entry = {v: any; e: number}; // value / 过期时间戳(ms)
 
 const PREFIX = 'apicache:';
+const MAX_MEM_ENTRIES = 1000;
 const mem = new Map<string, Entry>();
+const inFlight = new Map<string, Promise<any>>();
+
+function pruneMem(now = Date.now()) {
+  for (const [k, ent] of mem) {
+    if (ent.e <= now) {
+      mem.delete(k);
+    }
+  }
+  while (mem.size > MAX_MEM_ENTRIES) {
+    const oldest = mem.keys().next().value;
+    if (!oldest) {
+      break;
+    }
+    mem.delete(oldest);
+  }
+}
+
+function memSet(key: string, ent: Entry) {
+  mem.delete(key);
+  mem.set(key, ent);
+  pruneMem();
+}
+
+function memTouch(key: string, ent: Entry) {
+  mem.delete(key);
+  mem.set(key, ent);
+}
 
 /** 空结果（null/undefined/空数组）不缓存，避免接口偶发空响应被固化 */
 function isEmpty(v: any) {
@@ -25,30 +53,46 @@ export async function cachedGet<T>(
   fetcher: () => Promise<T>,
 ): Promise<T> {
   const now = Date.now();
+  pruneMem(now);
   const m = mem.get(key);
   if (m && m.e > now) {
+    memTouch(key, m);
     return m.v as T;
   }
-  try {
-    const raw = await AsyncStorage.getItem(PREFIX + key);
-    if (raw) {
-      const ent = JSON.parse(raw) as Entry;
-      if (ent.e > now) {
-        mem.set(key, ent);
-        return ent.v as T;
+  const running = inFlight.get(key) as Promise<T> | undefined;
+  if (running) {
+    return running;
+  }
+  const promise = (async () => {
+    try {
+      const raw = await AsyncStorage.getItem(PREFIX + key);
+      if (raw) {
+        const ent = JSON.parse(raw) as Entry;
+        if (ent.e > now) {
+          memSet(key, ent);
+          return ent.v as T;
+        }
+        AsyncStorage.removeItem(PREFIX + key).catch(() => {});
       }
-      AsyncStorage.removeItem(PREFIX + key).catch(() => {});
+    } catch (e) {
+      // 读缓存失败当作未命中
     }
-  } catch (e) {
-    // 读缓存失败当作未命中
+    const v = await fetcher();
+    if (!isEmpty(v)) {
+      const ent: Entry = {v, e: Date.now() + ttlMs};
+      memSet(key, ent);
+      AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
+    }
+    return v;
+  })();
+  inFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    if (inFlight.get(key) === promise) {
+      inFlight.delete(key);
+    }
   }
-  const v = await fetcher();
-  if (!isEmpty(v)) {
-    const ent: Entry = {v, e: now + ttlMs};
-    mem.set(key, ent);
-    AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
-  }
-  return v;
 }
 
 /** 丢弃指定键的缓存（内存+持久化），供下拉刷新等强制重拉场景使用 */
@@ -74,7 +118,7 @@ export async function cacheTouch(key: string, ttlMs: number) {
     if (raw) {
       const ent = JSON.parse(raw) as Entry;
       ent.e = e;
-      mem.set(key, ent);
+      memSet(key, ent);
       AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
     }
   } catch (err) {
@@ -108,7 +152,7 @@ export async function cachePeekMany<T>(keys: string[]): Promise<Map<string, T>> 
         const ent = JSON.parse(raw) as Entry;
         const k = pk.slice(PREFIX.length);
         if (ent.e > now) {
-          mem.set(k, ent);
+          memSet(k, ent);
           out.set(k, ent.v as T);
         } else {
           AsyncStorage.removeItem(pk).catch(() => {});
@@ -130,7 +174,7 @@ export function cachePutMany(entries: Array<[string, any]>, ttlMs: number) {
       continue;
     }
     const ent: Entry = {v, e};
-    mem.set(k, ent);
+    memSet(k, ent);
     kv.push([PREFIX + k, JSON.stringify(ent)]);
   }
   if (kv.length) {

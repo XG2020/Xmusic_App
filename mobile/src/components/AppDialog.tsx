@@ -163,7 +163,8 @@ const createStyles = (t: Theme) =>
     box: {
       width: '100%',
       maxWidth: 300,
-      backgroundColor: t.card,
+      // 弹窗背景：开启面板色时随板块色，否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 16,
       paddingHorizontal: 20,
       paddingTop: 22,

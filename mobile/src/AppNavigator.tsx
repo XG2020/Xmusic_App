@@ -8,9 +8,12 @@ import {
   Animated,
   TouchableOpacity,
   useWindowDimensions,
+  Dimensions,
 } from 'react-native';
 import {
   NavigationContainer,
+  DefaultTheme,
+  DarkTheme,
   useNavigationContainerRef,
 } from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
@@ -62,6 +65,8 @@ const MINI_BAR_ROUTES = new Set([
   'Personalize',
 ]);
 
+// 自绘了铺满屏幕的皮肤背景层的 Stack 页面：全局迷你播放条位于页面容器外，
+// 收不到页面自绘背景，需同步自绘同款背景让自定义背景图铺满整屏（含播放条）
 /**
  * 主页容器：推荐/歌单/排行/我的 横向 pager，可左右滑动连续切换 + 自绘底栏。
  * 推荐与歌单同属底栏「首页」tab（页0/1），顶部双 tab 与横滑联动。
@@ -75,6 +80,26 @@ function MainTabs({navigation, route}: any) {
   const [page, setPage] = useState(0);
   // 横滑进度（原生驱动）：驱动固定顶栏标题/搜索提示交叉渐变
   const scrollX = useRef(new Animated.Value(0)).current;
+  // 打开搜索时，搜索框上移；其下方 pager 内容同步向下退出。
+  const searchContentTransition = useRef(new Animated.Value(0)).current;
+  const searchContentShiftY = searchContentTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 72],
+  });
+  const searchContentOpacity = searchContentTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0.35],
+  });
+  const startSearchContentExit = () =>
+    Animated.timing(searchContentTransition, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    });
+  const resetSearchContent = () => {
+    searchContentTransition.stopAnimation();
+    searchContentTransition.setValue(0);
+  };
   // 固定顶栏实测高度：作为推荐/歌单两页内容的顶部内边距，避免被 overlay 遮住
   const [headerH, setHeaderH] = useState(0);
   // 皮肤：自定义背景图与底栏图标
@@ -82,6 +107,8 @@ function MainTabs({navigation, route}: any) {
   // 底栏排行榜入口开关（设置页切换后实时生效）
   const [showRank, setShowRank] = useState(showRankTabEnabled());
   useEffect(() => subscribeShowRankTab(setShowRank), []);
+  // 主页容器实测尺寸：顶栏自绘背景层与 mainWrap 背景层必须同尺寸（同 cover 算法）才能像素级对齐
+  const [wrapSize, setWrapSize] = useState({w: 0, h: 0});
   // 开关切换后页数/下标变化，回到首页避免错位
   useEffect(() => {
     pagerRef.current?.scrollTo({x: 0, animated: false});
@@ -128,7 +155,12 @@ function MainTabs({navigation, route}: any) {
       ];
 
   return (
-    <View style={[styles.mainWrap, {backgroundColor: t.bg}]}>
+    <View
+      style={[styles.mainWrap, {backgroundColor: t.bg}]}
+      onLayout={e => {
+        const {width: w, height: h} = e.nativeEvent.layout;
+        setWrapSize(prev => (prev.w === w && prev.h === h ? prev : {w, h}));
+      }}>
       {/* 自定义背景图：铺满主页容器，三个主页容器背景随之透明 */}
       {!!skin.bg && (
         <>
@@ -146,6 +178,10 @@ function MainTabs({navigation, route}: any) {
       )}
       <Animated.ScrollView
         ref={pagerRef}
+        style={{
+          opacity: searchContentOpacity,
+          transform: [{translateY: searchContentShiftY}],
+        }}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
@@ -188,13 +224,19 @@ function MainTabs({navigation, route}: any) {
         scrollX={scrollX}
         width={width}
         insetsTop={insets.top}
+        wrapHeight={wrapSize.h}
         onHeight={setHeaderH}
+        onSearchContentExit={startSearchContentExit}
+        onSearchContentReset={resetSearchContent}
       />
       <MiniPlayer />
       <View
         style={[
           styles.tabBar,
-          {backgroundColor: t.card, paddingBottom: Math.max(insets.bottom, 6)},
+          {
+            backgroundColor: t.panel ?? t.card,
+            paddingBottom: Math.max(insets.bottom, 6),
+          },
         ]}>
         {tabPages.map(({tab, target, active}) => {
           const color = active ? t.primary : t.sub;
@@ -234,54 +276,140 @@ function MainTabs({navigation, route}: any) {
 
 export default function AppNavigator() {
   const {t} = useTheme();
+  const skin = useSkin();
   const navRef = useNavigationContainerRef();
+  // routeName 仅用于 MiniPlayer 显隐判断
   const [routeName, setRouteName] = useState('');
+
   return (
     <NavigationContainer
       ref={navRef}
+      // 保持导航容器透明，由常驻的 NavigationBackground 提供不会随转场卸载的底图。
+      theme={{
+        ...(t.isDark ? DarkTheme : DefaultTheme),
+        colors: {
+          ...(t.isDark ? DarkTheme : DefaultTheme).colors,
+          background: 'transparent',
+        },
+      }}
+      // onStateChange 仅服务于 MiniPlayer 显隐（底部播放条路由过滤）
       onReady={() => setRouteName(navRef.getCurrentRoute()?.name ?? '')}
       onStateChange={() =>
         setRouteName(navRef.getCurrentRoute()?.name ?? '')
       }>
-      <Stack.Navigator
-        screenOptions={{
-          headerShown: false,
-          animation: 'slide_from_right',
-          animationDuration: 260,
-          contentStyle: {backgroundColor: t.bg},
-        }}>
-        <Stack.Screen name="Main" component={MainTabs} />
-        <Stack.Screen
-          name="Search"
-          component={SearchScreen}
-          options={{animation: 'fade_from_bottom', animationDuration: 220}}
-        />
-        <Stack.Screen name="Playlist" component={PlaylistScreen} />
-        <Stack.Screen name="Rank" component={RankScreen} />
-        <Stack.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
-        <Stack.Screen name="Local" component={LocalScreen} />
-        <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen name="Personalize" component={PersonalizeScreen} />
-        <Stack.Screen name="SleepTimer" component={SleepTimerScreen} />
-        <Stack.Screen name="Download" component={DownloadScreen} />
-        <Stack.Screen
-          name="NowPlaying"
-          component={NowPlayingScreen}
-          options={{animation: 'slide_from_bottom', animationDuration: 260}}
-        />
-        <Stack.Screen
-          name="Player"
-          component={PlayerScreen}
-          options={{animation: 'slide_from_bottom', animationDuration: 300}}
-        />
-      </Stack.Navigator>
-      {/* Stack 子页面底部全局迷你播放条（Tab 页由 tabBar 内的那份负责） */}
-      {MINI_BAR_ROUTES.has(routeName) && <MiniPlayer />}
+      <View style={styles.root}>
+        {/* 常驻背景：透明歌单页在进、退场动画中都不会露出主题底色。 */}
+        <NavigationBackground skinBg={skin.bg} tint={t.bg} />
+        <Stack.Navigator
+          screenOptions={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            animationDuration: 260,
+            contentStyle: {backgroundColor: t.bg},
+          }}>
+          <Stack.Screen name="Main" component={MainTabs} />
+          <Stack.Screen
+            name="Search"
+            component={SearchScreen}
+            options={{
+              // 首页搜索框已先在原位置上推到目标位置；此处只做短暂淡入，
+              // 不再让整个搜索页从底部滑入。
+              animation: 'fade',
+              animationDuration: 100,
+              contentStyle: {backgroundColor: 'transparent'},
+            }}
+          />
+          <Stack.Screen
+            name="Playlist"
+            component={PlaylistScreen}
+            options={{contentStyle: {backgroundColor: 'transparent'}}}
+          />
+          <Stack.Screen
+            name="Rank"
+            component={RankScreen}
+            options={{contentStyle: {backgroundColor: 'transparent'}}}
+          />
+          <Stack.Screen
+            name="PlaylistDetail"
+            component={PlaylistDetailScreen}
+            options={{contentStyle: {backgroundColor: 'transparent'}}}
+          />
+          <Stack.Screen
+            name="Local"
+            component={LocalScreen}
+            options={{contentStyle: {backgroundColor: 'transparent'}}}
+          />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="Personalize" component={PersonalizeScreen} />
+          <Stack.Screen name="SleepTimer" component={SleepTimerScreen} />
+          <Stack.Screen
+            name="Download"
+            component={DownloadScreen}
+            options={{contentStyle: {backgroundColor: 'transparent'}}}
+          />
+          <Stack.Screen
+            name="NowPlaying"
+            component={NowPlayingScreen}
+            options={{
+              animation: 'slide_from_bottom',
+              animationDuration: 260,
+              contentStyle: {backgroundColor: 'transparent'},
+            }}
+          />
+          <Stack.Screen
+            name="Player"
+            component={PlayerScreen}
+            options={{animation: 'slide_from_bottom', animationDuration: 300}}
+          />
+        </Stack.Navigator>
+        {/* Stack 子页面底部全局迷你播放条（Tab 页由 tabBar 内的那份负责） */}
+        {MINI_BAR_ROUTES.has(routeName) && <MiniPlayer />}
+      </View>
     </NavigationContainer>
   );
 }
 
+/**
+ * 常驻于 Stack 下方的导航背景。路由状态在 pop 开始时就会切换，
+ * 因此不能随路由条件卸载，否则退场中的透明页会闪出主题底色。
+ */
+function NavigationBackground({
+  skinBg,
+  tint,
+}: {
+  skinBg?: string;
+  tint: string;
+}) {
+  // Android adjustResize 会在键盘弹出时缩短 React 根容器；背景必须按物理屏幕
+  // 尺寸绘制，不能跟随容器高度重算 cover，否则画面会被上挤。
+  const {width, height} = Dimensions.get('screen');
+  const fixedScreenFill = {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    width,
+    height,
+  };
+  if (!skinBg) {
+    return <View style={[fixedScreenFill, {backgroundColor: tint}]} />;
+  }
+  return (
+    <>
+      <Image
+        source={{uri: skinBg}}
+        style={fixedScreenFill}
+        resizeMode="cover"
+        resizeMethod="resize"
+      />
+      <View
+        style={[fixedScreenFill, {backgroundColor: tint + 'A6'}]}
+      />
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
+  root: {flex: 1, backgroundColor: 'transparent'},
   mainWrap: {flex: 1},
   tabBar: {
     flexDirection: 'row',

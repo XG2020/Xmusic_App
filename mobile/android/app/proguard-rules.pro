@@ -10,23 +10,25 @@
 # Add any project specific keep options here:
 
 # ---- React Native 核心 ----
--keep class com.facebook.react.** { *; }
--keep class com.facebook.hermes.** { *; }
--keep class com.facebook.jni.** { *; }
--keep class com.facebook.soloader.** { *; }
--dontwarn com.facebook.react.**
-
-# 保留 Native Module / TurboModule 的注解方法，避免 RN 桥反射调用失效
--keepclassmembers class * { @com.facebook.react.bridge.ReactMethod <methods>; }
+# RN/Hermes 依赖自带 consumer rules，这里只保留桥反射所需的最小规则，
+# 不再整包 keep，避免削弱 R8 裁剪与混淆效果
 -keepclassmembers,includedescriptorclasses class * { native <methods>; }
+-keepclassmembers class * { @com.facebook.react.bridge.ReactMethod <methods>; }
+-keepclassmembers class * { @com.facebook.proguard.annotations.DoNotStrip *; }
 -keep,allowobfuscation @interface com.facebook.proguard.annotations.DoNotStrip
 -keep @com.facebook.proguard.annotations.DoNotStrip class *
--keepclassmembers class * {
-    @com.facebook.proguard.annotations.DoNotStrip *;
-}
+-dontwarn com.facebook.react.**
+-dontwarn com.facebook.hermes.**
+-dontwarn com.facebook.jni.**
+-dontwarn com.facebook.soloader.**
 
-# ---- 本项目自定义原生模块（LocalMusicModule 经反射注册） ----
--keep class com.qmusiclite.localmusic.** { *; }
+# ---- 本项目自定义原生模块（LocalMusicModule 经反射注册，保留类名与方法） ----
+-keep,allowobfuscation class com.qmusiclite.localmusic.LocalMusicModule
+-keep,allowobfuscation class com.qmusiclite.localmusic.LocalMusicPackage
+-keepclassmembers,allowobfuscation class com.qmusiclite.localmusic.LocalMusicModule {
+    @com.facebook.react.bridge.ReactMethod <methods>;
+    public <init>(...);
+}
 
 # ---- react-native-track-player（前台服务/媒体会话） ----
 -keep class com.doublesymmetry.trackplayer.** { *; }

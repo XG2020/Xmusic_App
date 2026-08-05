@@ -73,7 +73,6 @@ export async function cachedSongPath(
   const base = `${DIR}/${keyOf(mid, quality)}`;
   for (const ext of ['flac', 'mp3'] as const) {
     const p = `${base}.${ext}`;
-    // eslint-disable-next-line no-await-in-loop
     if (await RNFS.exists(p).catch(() => false)) {
       return p;
     }
@@ -88,7 +87,6 @@ export async function cachedSongPath(
  */
 export async function anyCachedSongPath(mid: string): Promise<string | null> {
   for (const opt of QUALITY_OPTIONS) {
-    // eslint-disable-next-line no-await-in-loop
     const p = await cachedSongPath(mid, opt.value);
     if (p) {
       return p;

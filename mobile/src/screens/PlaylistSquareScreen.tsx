@@ -60,6 +60,10 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // 首屏加载失败（列表为空时显示错误态供重试；已有旧列表时静默保留）
+  const [loadFailed, setLoadFailed] = useState(false);
+  // 分页加载失败（footer 显示点击重试）
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const loadedRef = useRef(false);
   // 已收藏歌单 id 集合（收藏/取消实时刷新）
   const favIds = useFavPlaylistIds();
@@ -71,8 +75,10 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
       setList(res.list);
       setTotal(res.total);
       setPage(1);
+      setLoadFailed(false);
     } catch (e) {
-      // 静默失败，保留旧列表
+      // 首次加载失败：列表为空时显示错误态供重试
+      setLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -114,8 +120,10 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
         setPage(next);
       }
       setTotal(res.total);
+      setLoadMoreFailed(false);
     } catch (e) {
-      // 静默失败，继续滚动可重试
+      // 分页失败：footer 显示点击重试
+      setLoadMoreFailed(true);
     } finally {
       setLoadingMore(false);
     }
@@ -222,6 +230,12 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
               color={t.primary}
               size="large"
             />
+          ) : loadFailed && list.length === 0 ? (
+            <TouchableOpacity
+              style={styles.retryWrap}
+              onPress={() => loadFirst(cat)}>
+              <Text style={styles.retryText}>加载失败，点击重试</Text>
+            </TouchableOpacity>
           ) : (
             <FlatList
               showsVerticalScrollIndicator={false}
@@ -242,6 +256,14 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
                     style={styles.footerLoading}
                     color={t.primary}
                   />
+                ) : loadMoreFailed ? (
+                  <TouchableOpacity
+                    style={styles.footerRetry}
+                    onPress={loadMore}>
+                    <Text style={styles.footerRetryText}>
+                      加载失败，点击重试
+                    </Text>
+                  </TouchableOpacity>
                 ) : list.length > 0 && list.length >= total ? (
                   <Text style={styles.footerEnd}>没有更多歌单了</Text>
                 ) : (
@@ -249,42 +271,45 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
                 )
               }
               renderItem={({item}) => (
-                <TouchableOpacity
-                  style={styles.plCard}
-                  activeOpacity={0.85}
-                  onPress={() => openPlaylist(item)}>
-                  {item.coverUrl ? (
-                    <Image
-                      source={{uri: item.coverUrl}}
-                      style={styles.plCover}
-                      resizeMethod="resize"
-                    />
-                  ) : (
-                    <View style={[styles.plCover, styles.plCoverFallback]}>
-                      <Text style={styles.plCoverFallbackText}>♪</Text>
-                    </View>
-                  )}
-                  <View style={styles.plInfo}>
-                    <Text style={styles.plName} numberOfLines={1}>
-                      {item.title}
-                    </Text>
-                    {!!item.introduction && (
-                      <Text style={styles.plDesc} numberOfLines={2}>
-                        {item.introduction}
-                      </Text>
+                <View style={styles.plCard}>
+                  {/* 主点击区与右侧收藏按钮拆成兄弟节点，避免点收藏时误触打开歌单 */}
+                  <TouchableOpacity
+                    style={styles.plMain}
+                    activeOpacity={0.85}
+                    onPress={() => openPlaylist(item)}>
+                    {item.coverUrl ? (
+                      <Image
+                        source={{uri: item.coverUrl}}
+                        style={styles.plCover}
+                        resizeMethod="resize"
+                      />
+                    ) : (
+                      <View style={[styles.plCover, styles.plCoverFallback]}>
+                        <Text style={styles.plCoverFallbackText}>♪</Text>
+                      </View>
                     )}
-                    <Text style={styles.plMeta} numberOfLines={1}>
-                      {[
-                        item.songCount ? `${item.songCount}首` : '',
-                        item.listenNum
-                          ? `${formatListen(item.listenNum)}次播放`
-                          : '',
-                        item.creatorName ?? '',
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
+                    <View style={styles.plInfo}>
+                      <Text style={styles.plName} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      {!!item.introduction && (
+                        <Text style={styles.plDesc} numberOfLines={2}>
+                          {item.introduction}
+                        </Text>
+                      )}
+                      <Text style={styles.plMeta} numberOfLines={1}>
+                        {[
+                          item.songCount ? `${item.songCount}首` : '',
+                          item.listenNum
+                            ? `${formatListen(item.listenNum)}次播放`
+                            : '',
+                          item.creatorName ?? '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.favBtn}
                     onPress={() => onToggleFav(item)}
@@ -299,7 +324,7 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
                       }
                     />
                   </TouchableOpacity>
-                </TouchableOpacity>
+                </View>
               )}
             />
           )}
@@ -312,11 +337,12 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     container: {flex: 1},
-    // 分类栏
+    // 分类栏（保持透明，不随板块背景主题色变化）
     catBar: {flexDirection: 'row', alignItems: 'center', paddingRight: 10},
     catChips: {paddingHorizontal: 12, gap: 8, alignItems: 'center'},
     catChip: {
-      backgroundColor: t.card,
+      // 胶囊底色：开启面板色时随主题（主题色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       borderRadius: 15,
       paddingHorizontal: 13,
       paddingVertical: 6,
@@ -369,17 +395,25 @@ const createStyles = (t: Theme) =>
       textAlign: 'center',
       marginVertical: 16,
     },
+    // 首屏/分页失败重试
+    retryWrap: {alignItems: 'center', marginTop: 40},
+    retryText: {color: t.primary, fontSize: 14},
+    footerRetry: {alignItems: 'center', marginVertical: 16},
+    footerRetryText: {color: t.primary, fontSize: 13},
     bottomSpace: {height: 24},
     // 套用首页榜单卡布局：左封面 / 中简介 / 右收藏
     plCard: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: t.card,
+      // 歌单卡片底色：开启面板色时随主题（主题色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       marginHorizontal: 12,
       marginBottom: 10,
       borderRadius: 14,
       padding: 12,
     },
+    // 卡片主点击区（占满左侧空间，与右侧收藏按钮兄弟布局）
+    plMain: {flex: 1, flexDirection: 'row', alignItems: 'center'},
     plCover: {width: 84, height: 84, borderRadius: 10},
     plCoverFallback: {
       backgroundColor: t.cardLight,

@@ -1,10 +1,12 @@
 package com.qmusiclite
 
+import android.content.pm.PackageManager
 import android.os.Bundle
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
+import com.qmusiclite.localmusic.LocalMusicModule
 
 class MainActivity : ReactActivity() {
 
@@ -16,6 +18,22 @@ class MainActivity : ReactActivity() {
       setTheme(R.style.AppTheme_CustomSplash)
     }
     super.onCreate(savedInstanceState)
+  }
+
+  /**
+   * 运行时权限结果转发给 LocalMusicModule（RN 0.76 的 ActivityEventListener
+   * 无权限回调）：音频/存储读取授权后模块继续「所有文件访问」环节
+   */
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == LocalMusicModule.MEDIA_PERMISSION_REQUEST) {
+      val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+      LocalMusicModule.notifyMediaPermissionResult(granted)
+    }
   }
 
   /**

@@ -21,7 +21,12 @@ import TrackPlayer, {
 import {getLyric} from '../services/api';
 import {readLocalLyric} from '../services/download';
 import {parseLrc, parseQrc, findActiveLine, LrcLine, QrcWord} from '../utils/lrc';
-import {seekTo} from '../services/player';
+import {
+  seekTo,
+  getPendingRestoreTrack,
+  getPendingRestoreProgress,
+  subscribePendingRestore,
+} from '../services/player';
 import {formatDuration} from '../utils/format';
 import {useTheme, Theme} from '../theme';
 
@@ -368,9 +373,32 @@ const LyricRow = React.memo(function LyricRow({
 export default function LyricView() {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
-  const track = useActiveTrack();
+  const nativeTrack = useActiveTrack();
+  // 延迟恢复：冷启动原生队列为空（未点播放）时，回退显示上次会话快照的当前曲目，
+  // 歌词照常请求并按快照进度定位高亮行；用户点播放后原生曲目就绪自动切换
+  const [pendingTrack, setPendingTrack] = useState(() =>
+    getPendingRestoreTrack(),
+  );
+  const [pendingProgress, setPendingProgress] = useState(() =>
+    getPendingRestoreProgress(),
+  );
+  useEffect(
+    () =>
+      subscribePendingRestore(() => {
+        setPendingTrack(getPendingRestoreTrack());
+        setPendingProgress(getPendingRestoreProgress());
+      }),
+    [],
+  );
+  const track = nativeTrack ?? pendingTrack;
   const progress = useProgress(500);
   const playing = usePlaybackState().state === State.Playing;
+  // 原生播放器无内容（延迟恢复期）时用快照进度/时长定位歌词高亮行
+  const displayPosition =
+    progress.duration > 0 || progress.position > 0
+      ? progress.position
+      : pendingProgress.position;
+  const displayDuration = progress.duration || pendingProgress.duration;
   const [lines, setLines] = useState<LrcLine[]>([]);
   const [transMap, setTransMap] = useState<Record<number, string>>({});
   // QRC 逐字时间轴（按行下标对齐 lines，拿不到逐字数据时为空）
@@ -471,8 +499,8 @@ export default function LyricView() {
   }, [mid, isLocal, trackUrl]);
 
   const activeIndex = useMemo(
-    () => findActiveLine(lines, progress.position),
-    [lines, progress.position],
+    () => findActiveLine(lines, displayPosition),
+    [lines, displayPosition],
   );
   activeIndexRef.current = activeIndex;
 
@@ -599,10 +627,10 @@ export default function LyricView() {
               end={
                 index + 1 < lines.length
                   ? lines[index + 1].time
-                  : Math.max(progress.duration, item.time + 1)
+                  : Math.max(displayDuration, item.time + 1)
               }
               active={index === activeIndex}
-              position={index === activeIndex ? progress.position : 0}
+              position={index === activeIndex ? displayPosition : 0}
               playing={index === activeIndex ? playing : false}
               fillColor={t.primary}
               words={wordsMap[index]}
@@ -663,7 +691,7 @@ const createStyles = (t: Theme) =>
       justifyContent: 'center',
     },
     timeBubbleText: {
-      fontSize: 10,
+      fontSize: 11,
       color: t.playerText,
       // 主题文字色低透明度做浮层底，明暗模式都有轻微衬托
       backgroundColor: t.playerText + '24',

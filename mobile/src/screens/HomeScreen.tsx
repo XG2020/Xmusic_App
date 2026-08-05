@@ -1,14 +1,16 @@
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  FlatList,
   Image,
   Animated,
   RefreshControl,
   LayoutChangeEvent,
+  useWindowDimensions,
 } from 'react-native';
 import {useRecentSongs} from '../services/store';
 import {playSongs} from '../services/player';
@@ -31,10 +33,77 @@ export function HomeTopBar({
   scrollX,
   width,
   insetsTop,
+  wrapHeight,
   onHeight,
+  onSearchContentExit,
+  onSearchContentReset,
 }: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  // 皮肤：有自定义背景图时顶栏自绘同款背景层，背景图贯穿顶栏不被色带截断
+  const skin = useSkin();
+  // 顶栏背景层用与 mainWrap 背景层完全相同的尺寸（width 100% + 实测容器高）渲染，
+  // 同图同尺寸同 cover 算法保证像素级对齐；实测高度未就绪前用窗口高度兜底
+  const {height: windowH} = useWindowDimensions();
+  const bgH = wrapHeight || windowH;
+  // 从首页搜索框到搜索页输入框的过渡：先在首页完成位移动画，再淡入实际页面，
+  // 避免整个页面从底部滑入而让搜索框失去来源位置。
+  const searchTransition = useRef(new Animated.Value(0)).current;
+  const [searchTransitioning, setSearchTransitioning] = useState(false);
+  // 首页搜索框在标题下方约 48dp，搜索页输入框位于安全区顶部；
+  // 这里使用固定差值，避免 onLayout 相对父节点的坐标导致位移方向反转。
+  const SEARCH_BAR_LIFT = 48;
+  const searchShiftY = searchTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -SEARCH_BAR_LIFT],
+  });
+  const headerShiftY = searchTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -SEARCH_BAR_LIFT],
+  });
+  const headerOpacity = searchTransition.interpolate({
+    inputRange: [0, 0.75, 1],
+    outputRange: [1, 0.2, 0],
+  });
+
+  useEffect(() => {
+    // 从搜索页返回时恢复首页标题与搜索框的初始位置。
+    return navigation.addListener('focus', () => {
+      searchTransition.stopAnimation();
+      searchTransition.setValue(0);
+      setSearchTransitioning(false);
+      onSearchContentReset?.();
+    });
+  }, [navigation, onSearchContentReset, searchTransition]);
+
+  const openSearch = () => {
+    if (searchTransitioning) {
+      return;
+    }
+    setSearchTransitioning(true);
+    searchTransition.setValue(0);
+    const animations = [
+      Animated.timing(searchTransition, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+    ];
+    const contentExit = onSearchContentExit?.();
+    if (contentExit) {
+      animations.push(contentExit);
+    }
+    Animated.parallel(animations).start(({finished}) => {
+      if (finished) {
+        navigation.navigate(
+          'Search',
+          page === 1
+            ? {tab: 'playlist', fromHomeSearch: true}
+            : {fromHomeSearch: true},
+        );
+      }
+    });
+  };
   // 推荐(页0)↔歌单(页1) 交叉渐变：scrollX 在 [0, width] 之间
   const recActive = scrollX.interpolate({
     inputRange: [0, width],
@@ -108,11 +177,30 @@ export function HomeTopBar({
     <Animated.View
       style={[
         styles.overlay,
+        // 皮肤模式下顶栏透明，由内部自绘背景层显示同款背景图
+        !!skin.bg && styles.overlaySkin,
         {paddingTop: insetsTop, transform: [{translateX}], opacity: barOpacity},
       ]}
       pointerEvents={page <= 1 ? 'auto' : 'none'}
       onLayout={e => onHeight?.(e.nativeEvent.layout.height)}>
-      <View style={styles.header}>
+      {/* 皮肤：顶栏自绘与主页同款背景层（与 mainWrap 背景层同尺寸 cover，像素级对齐） */}
+      {!!skin.bg && (
+        <>
+          <Image
+            source={{uri: skin.bg}}
+            style={[styles.skinBgImg, {height: bgH}]}
+            resizeMode="cover"
+            resizeMethod="resize"
+          />
+          {/* 与全局背景遮罩同色同尺寸压暗，顶栏与内容区视觉完全一致 */}
+          <View style={[styles.skinBgImg, {height: bgH, backgroundColor: t.bg + 'A6'}]} />
+        </>
+      )}
+      <Animated.View
+        style={[
+          styles.header,
+          {opacity: headerOpacity, transform: [{translateY: headerShiftY}]},
+        ]}>
         <View style={styles.headerTabs}>
           <TouchableOpacity
             onPress={() => goTab?.(0)}
@@ -149,17 +237,15 @@ export function HomeTopBar({
           hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}>
           <Icon name="downloadFilled" size={25} color={t.text} />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* 搜索栏：按当前页跳转（歌曲/歌单），提示文案随横滑交叉渐变 */}
-      <TouchableOpacity
+      <Animated.View style={{transform: [{translateY: searchShiftY}]}}>
+        <TouchableOpacity
         style={styles.searchBox}
         activeOpacity={0.8}
-        onPress={() =>
-          page === 1
-            ? navigation.navigate('Search', {tab: 'playlist'})
-            : navigation.navigate('Search')
-        }>
+        disabled={searchTransitioning}
+        onPress={openSearch}>
         <View style={styles.searchInner}>
           <Icon name="search" size={15} />
           <View style={styles.searchHintWrap}>
@@ -176,7 +262,8 @@ export function HomeTopBar({
             </Animated.Text>
           </View>
         </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -202,13 +289,17 @@ export default function HomeScreen({navigation, topPad = 0}: any) {
   const recents = useRecentSongs();
   const [ranks, setRanks] = useState<RankInfo[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  // 首次加载失败标记（已有数据时失败保留旧数据、不提示）
+  const [rankError, setRankError] = useState(false);
 
   const loadRanks = useCallback(async (force?: boolean) => {
     try {
       const list = await getTopGroups(force);
       setRanks(list.slice(0, 6));
+      setRankError(false);
     } catch (e) {
-      // 保留旧数据，静默失败
+      // 首次加载失败：显示错误态供重试，避免永远停在「榜单加载中…」
+      setRankError(true);
     }
   }, []);
 
@@ -255,40 +346,54 @@ export default function HomeScreen({navigation, topPad = 0}: any) {
                 <Text style={styles.moreText}>更多 ›</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView
+            <FlatList
               horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.recentRow}>
-              {recents.slice(0, 10).map((s, i) => (
+              data={recents.slice(0, 10)}
+              keyExtractor={(item, i) =>
+                `${item.mid ?? item.localPath ?? item.title}-${i}`
+              }
+              renderItem={({item}) => (
                 <TouchableOpacity
-                  key={`${s.mid ?? s.localPath ?? s.title}-${i}`}
                   style={styles.recentItem}
+                  activeOpacity={0.85}
                   onPress={() => {
-                    playSongs([s]);
+                    playSongs([item]);
                     if (autoOpenPlayerEnabled()) {
                       navigation.navigate('Player');
                     }
                   }}>
-                  {s.coverUrl ? (
-                    <Image source={{uri: s.coverUrl}} style={styles.recentCover} />
+                  {item.coverUrl ? (
+                    <Image source={{uri: item.coverUrl}} style={styles.recentCover} />
                   ) : (
                     <View style={[styles.recentCover, styles.recentFallback]}>
                       <Text style={styles.recentFallbackText}>♪</Text>
                     </View>
                   )}
                   <Text style={styles.recentTitle} numberOfLines={1}>
-                    {s.title}
+                    {item.title}
                   </Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
+              )}
+              showsHorizontalScrollIndicator={false}
+              directionalLockEnabled
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.recentRow}
+            />
           </>
         )}
 
         {/* 官方榜单（动态获取，带封面与前三歌曲） */}
         <Text style={styles.sectionTitle}>官方榜单</Text>
-        {ranks.length === 0 && (
+        {ranks.length === 0 && !rankError && (
           <Text style={styles.rankLoading}>榜单加载中…</Text>
+        )}
+        {ranks.length === 0 && rankError && (
+          <TouchableOpacity
+            style={styles.rankRetry}
+            onPress={() => loadRanks(true)}>
+            <Text style={styles.rankRetryText}>榜单加载失败，点击重试</Text>
+          </TouchableOpacity>
         )}
         {ranks.map(r => (
           <TouchableOpacity
@@ -343,6 +448,20 @@ const createStyles = (t: Theme) =>
       paddingBottom: 4,
       backgroundColor: t.bg,
     },
+    // 皮肤模式顶栏：自身透明，背景由 overlay 内自绘的背景层提供，
+    // 裁剪掉超出顶栏高度的部分（背景图本身是全屏尺寸保证与主页背景对齐）
+    overlaySkin: {
+      backgroundColor: 'transparent',
+      overflow: 'hidden',
+    },
+    // 顶栏皮肤背景层（背景图/遮罩共用）：与 mainWrap 背景层同尺寸（全屏宽 + 实测容器高）+ cover，像素级对齐；
+    // 绝对定位于顶栏顶部，超出顶栏高度的部分由 overlay 的 overflow hidden 裁剪
+    skinBgImg: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      width: '100%',
+    },
     // 搜索提示层叠容器：首行文本定尺寸，第二行绝对定位叠加做交叉渐变
     searchHintWrap: {justifyContent: 'center'},
     header: {
@@ -386,7 +505,8 @@ const createStyles = (t: Theme) =>
     searchBox: {
       height: 38,
       borderRadius: 19,
-      backgroundColor: t.card,
+      // 搜索框胶囊：开启面板色时随主题（主题色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       justifyContent: 'center',
       paddingHorizontal: 14,
       marginHorizontal: 16,
@@ -423,10 +543,13 @@ const createStyles = (t: Theme) =>
     recentFallbackText: {fontSize: 28, color: t.sub},
     recentTitle: {fontSize: 12, color: t.text, marginTop: 6},
     rankLoading: {color: t.sub, fontSize: 13, marginHorizontal: 16},
+    rankRetry: {marginHorizontal: 16, paddingVertical: 8},
+    rankRetryText: {color: t.primary, fontSize: 14},
     rankCard: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: t.card,
+      // 榜单卡片底色：开启面板色时随主题（主题色 @ 透明度），否则保持卡片色
+      backgroundColor: t.panel ?? t.card,
       marginHorizontal: 12,
       marginBottom: 10,
       borderRadius: 14,

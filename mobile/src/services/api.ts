@@ -220,10 +220,10 @@ export async function getSongUrls(
       return result;
     }
   }
-  // 对未命中的 mid 请求直链；首轮请求全部，之后只重试仍为空的 mid（最多 3 轮）。
+  // 对未命中的 mid 请求直链；仅请求一轮，不再对空直链重试。
   const fresh: Record<string, string> = {};
   let pending = misses;
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 1;
   for (let attempt = 0; attempt < MAX_ATTEMPTS && pending.length; attempt++) {
     if (attempt > 0) {
       // 递增退避：250ms、500ms，给服务端瞬时空返回一点恢复时间
@@ -261,12 +261,16 @@ export async function getPreferredSongUrls(mids: string[], force = false) {
 export async function resolveSongUrls(songs: Song[]): Promise<Song[]> {
   const mids = songs.map(s => s.mid!).filter(Boolean);
   const urlMap: Record<string, string> = {};
+  // 多批并行请求，大幅提升导入时检测可播放性的速度
+  const tasks: Promise<Record<string, string>>[] = [];
   for (let i = 0; i < mids.length; i += 50) {
-    try {
-      Object.assign(urlMap, await getPreferredSongUrls(mids.slice(i, i + 50)));
-    } catch (e) {
-      // 单批失败跳过
-    }
+    tasks.push(
+      getPreferredSongUrls(mids.slice(i, i + 50)).catch(() => ({})),
+    );
+  }
+  const results = await Promise.all(tasks);
+  for (const r of results) {
+    Object.assign(urlMap, r);
   }
   return songs
     .map(s => ({...s, url: (s.mid && urlMap[s.mid]) || s.url}))
@@ -466,7 +470,7 @@ export async function getTopSongs(id: number, num = 50): Promise<Song[]> {
         const full = normalizeSong(t);
         infoMap.set(t.id, full);
         if (full.mid) {
-          midCache.set(t.id, full); // 顺带填充 id->mid 缓存，播放时免二次请求
+          setMidCache(t.id, full); // 顺带填充 id->mid 缓存，播放时免二次请求
         }
       }
     }
@@ -505,7 +509,20 @@ export function normalizeSong(s: any): Song {
 }
 
 // id -> mid 解析缓存（榜单歌曲只有 songId）
+const MID_CACHE_LIMIT = 1000;
 const midCache = new Map<number, Song>();
+
+function setMidCache(id: number, song: Song) {
+  midCache.delete(id);
+  midCache.set(id, song);
+  while (midCache.size > MID_CACHE_LIMIT) {
+    const oldest = midCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    midCache.delete(oldest);
+  }
+}
 
 /** 通过歌曲 id 获取完整信息（含 mid），带缓存 */
 export async function resolveSongById(id: number): Promise<Song | undefined> {
@@ -519,7 +536,7 @@ export async function resolveSongById(id: number): Promise<Song | undefined> {
       return undefined;
     }
     const song = normalizeSong(t);
-    midCache.set(id, song);
+    setMidCache(id, song);
     return song;
   } catch (e) {
     return undefined;
