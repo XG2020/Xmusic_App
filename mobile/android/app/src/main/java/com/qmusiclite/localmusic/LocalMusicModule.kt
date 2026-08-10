@@ -645,6 +645,17 @@ class LocalMusicModule(private val reactContext: ReactApplicationContext) : Reac
   }
 
   /** 删除 SAF 授权目录中的文件（content:// document uri），失败时 reject */
+  /** 校验 SAF content:// 文件是否仍存在，供离线播放自动跳过失效歌曲。 */
+  @ReactMethod
+  fun fileExists(uri: String, promise: Promise) {
+    try {
+      val parsed = Uri.parse(uri)
+      reactContext.contentResolver.openAssetFileDescriptor(parsed, "r")?.use { }
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.resolve(false)
+    }
+  }
   @ReactMethod
   fun deleteFile(uri: String, promise: Promise) {
     try {

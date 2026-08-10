@@ -1,11 +1,13 @@
 import {useEffect, useState} from 'react';
 import {InteractionManager} from 'react-native';
+import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {Song} from '../types/music';
 
 const RECENT_KEY = 'recent_songs';
 const FAV_KEY = 'fav_songs';
 const MAX_RECENT = 100;
+const DOWNLOADED_SONGS_KEY = 'downloaded_songs_v1';
 
 // 最近播放变更通知：任意页面通过 useRecentSongs 实时感知
 const recentListeners = new Set<() => void>();
@@ -95,8 +97,87 @@ export function useRecentSongs(): Song[] {
   return list;
 }
 
+type DownloadedSongIndex = Record<string, string>;
+
+function downloadMatchKey(song: Pick<Song, 'mid' | 'title' | 'singer'>): string {
+  if (song.mid) return `mid:${song.mid}`;
+  const artist = song.singer?.map(x => x.name).join(' / ') ?? '';
+  return `title:${song.title}|artist:${artist}`;
+}
+
+async function readDownloadedIndex(): Promise<DownloadedSongIndex> {
+  try {
+    const raw = await AsyncStorage.getItem(DOWNLOADED_SONGS_KEY);
+    return raw ? (JSON.parse(raw) as DownloadedSongIndex) : {};
+  } catch (e) { return {}; }
+}
+
+export async function getDownloadedSongPath(song: Song): Promise<string | undefined> {
+  const index = await readDownloadedIndex();
+  const indexed = index[downloadMatchKey(song)];
+  if (indexed) {
+    return indexed;
+  }
+  // 兼容升级前已经完成的下载：旧记录没有独立索引，但任务 id 以 mid 开头。
+  try {
+    const raw = await AsyncStorage.getItem('download_history');
+    const history = raw ? (JSON.parse(raw) as Array<{id?: string; title?: string; path?: string; status?: string}>) : [];
+    const hit = history.find(item =>
+      item.status === 'done' &&
+      !!item.path &&
+      (song.mid ? item.id?.startsWith(`${song.mid}:`) : item.title === song.title),
+    );
+    return hit?.path;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+export async function markSongDownloaded(song: Song, path: string): Promise<void> {
+  if (!path) return;
+  const index = await readDownloadedIndex();
+  index[downloadMatchKey(song)] = path;
+  await AsyncStorage.setItem(DOWNLOADED_SONGS_KEY, JSON.stringify(index)).catch(() => {});
+  const [fav, playlists] = await Promise.all([readList(FAV_KEY), readLocalPlaylistsRaw()]);
+  const sameSong = (a: Song, b: Song) => a.mid && b.mid ? a.mid === b.mid : downloadMatchKey(a) === downloadMatchKey(b);
+  let favChanged = false;
+  const nextFav = fav.map(item => {
+    if (sameSong(item, song) && item.localPath !== path) { favChanged = true; return {...item, localPath: path, unplayable: undefined}; }
+    return item;
+  });
+  let playlistChanged = false;
+  const nextPlaylists = playlists.map(pl => {
+    let changed = false;
+    const nextSongs = pl.songs.map(item => {
+      if (sameSong(item, song) && item.localPath !== path) { changed = true; playlistChanged = true; return {...item, localPath: path, unplayable: undefined}; }
+      return item;
+    });
+    return changed ? {...pl, songs: nextSongs} : pl;
+  });
+  if (favChanged) await AsyncStorage.setItem(FAV_KEY, JSON.stringify(nextFav)).catch(() => {});
+  if (playlistChanged) await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(nextPlaylists)).catch(() => {});
+}
+
+async function indexedLocalPathExists(path: string): Promise<boolean> {
+  if (path.startsWith('content://')) {
+    // content:// 的最终存在性由播放服务通过 ContentResolver 校验。
+    return true;
+  }
+  return RNFS.exists(path.replace(/^file:\/\//i, '')).catch(() => false);
+}
+
+export async function hydrateDownloadedSong(song: Song): Promise<Song> {
+  if (song.localPath || song.uri) return song;
+  const path = await getDownloadedSongPath(song);
+  if (!path || !(await indexedLocalPathExists(path))) {
+    return song;
+  }
+  return {...song, localPath: path, unplayable: undefined};
+}
+
 export async function getFavSongs(): Promise<Song[]> {
-  return readList(FAV_KEY);
+  const songs = await readList(FAV_KEY);
+  return Promise.all(songs.map(hydrateDownloadedSong));
 }
 
 export async function isFav(song: Song): Promise<boolean> {
@@ -139,6 +220,16 @@ export type LocalPlaylist = {
 const PLAYLISTS_KEY = 'local_playlists';
 
 export async function getLocalPlaylists(): Promise<LocalPlaylist[]> {
+  const list = await readLocalPlaylistsRaw();
+  return Promise.all(
+    list.map(async pl => ({
+      ...pl,
+      songs: await Promise.all(pl.songs.map(hydrateDownloadedSong)),
+    })),
+  );
+}
+
+async function readLocalPlaylistsRaw(): Promise<LocalPlaylist[]> {
   try {
     const raw = await AsyncStorage.getItem(PLAYLISTS_KEY);
     return raw ? (JSON.parse(raw) as LocalPlaylist[]) : [];

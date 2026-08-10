@@ -8,6 +8,7 @@ import TrackPlayer, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {getPreferredSongUrls, getSongUrls} from './api';
 import {enrichLocalSong} from './download';
+import {hydrateDownloadedSong} from './store';
 import {ensureOnlinePlayback, isConnected} from './network';
 import {isOfflinePlayable, preferCachedSong} from './songCache';
 import {getPlayQuality, allowMixWithOthersEnabled} from './settings';
@@ -18,7 +19,7 @@ export type PlayMode = 'list' | 'single' | 'shuffle';
 
 /** 是否为需要联网的在线曲目（有 mid 待解析或直链为 http，且非本地文件） */
 function isOnlineSong(s?: Song): boolean {
-  if (!s || s.localPath) {
+  if (!s || s.localPath || s.uri || s.filePath) {
     return false;
   }
   return !!s.mid || /^https?:/i.test(s.url ?? '');
@@ -271,7 +272,8 @@ export async function setupPlayer(): Promise<boolean> {
 export function songToTrack(s: Song): Track {
   return {
     id: s.mid ?? String(s.id ?? s.title),
-    url: s.url ?? s.localPath ?? s.uri ?? '',
+    // 本地文件必须优先于线上 url；否则已下载歌曲离线时仍会请求网络。
+    url: s.localPath ?? s.uri ?? s.filePath ?? s.url ?? '',
     title: s.title,
     artist: s.singer?.map(x => x.name).join(' / ') ?? '未知歌手',
     artwork: s.coverUrl,
@@ -290,7 +292,8 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   }
   // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
   requestNotificationPermissionOnce();
-  const startSong = songs[Math.min(Math.max(startIndex, 0), songs.length - 1)];
+  const hydratedSongs = await Promise.all(songs.map(hydrateDownloadedSong));
+  const startSong = hydratedSongs[Math.min(Math.max(startIndex, 0), hydratedSongs.length - 1)];
   const q = await getPlayQuality();
   // 播放在线内容前的网络门禁：无网提示 / 流量三选项弹窗，用户拒绝则不加载。
   // 已整曲缓存 / 本地曲目可离线播放（不消耗流量）→ 直接放行，跳过门禁与流量提醒；
@@ -307,7 +310,7 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   enqueueSession += 1;
   pendingMap.clear();
   // 本地歌曲补全下载时保存的封面与元数据（mid/歌手等），播放页才能完整显示
-  const enriched = await Promise.all(songs.map(enrichLocalSong));
+  const enriched = await Promise.all(hydratedSongs.map(enrichLocalSong));
   // 已整曲缓存的在线曲目优先用本地文件（离线/秒开）；离线时放宽到任一已缓存音质
   const preferred = await Promise.all(
     enriched.map(s => preferCachedSong(s, q, offline)),
@@ -418,8 +421,9 @@ export async function playSongsProgressive(
   }
   // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
   requestNotificationPermissionOnce();
+  const hydratedSongs = await Promise.all(songs.map(hydrateDownloadedSong));
   // 播放在线内容前的网络门禁：无网提示 / 流量三选项弹窗，用户拒绝则不加载
-  const startSong = songs[Math.min(Math.max(startIndex, 0), songs.length - 1)];
+  const startSong = hydratedSongs[Math.min(Math.max(startIndex, 0), hydratedSongs.length - 1)];
   // 当前播放音质：用于匹配已整曲缓存的本地文件
   const q = await getPlayQuality();
   // 已整曲缓存 / 本地曲目可离线播放 → 跳过网络门禁；离线放宽到任一已缓存音质
@@ -434,13 +438,22 @@ export async function playSongsProgressive(
   const session = ++enqueueSession;
   const FIRST = 12;
   const BATCH = 30;
+  // 从已下载/本地歌曲开始播放时只物化当前歌曲，避免顺带解析后续在线歌曲消耗流量。
+  const localStart = !!(
+    startSong?.localPath ||
+    startSong?.uri ||
+    startSong?.filePath ||
+    (startSong?.url && !/^https?:/i.test(startSong.url))
+  );
   // 旋转列表：从点击位置开始，前面的歌排到队尾
-  const idx = Math.min(Math.max(startIndex, 0), songs.length - 1);
-  const ordered = [...songs.slice(idx), ...songs.slice(0, idx)];
+  const idx = Math.min(Math.max(startIndex, 0), hydratedSongs.length - 1);
+  const ordered = [...hydratedSongs.slice(idx), ...hydratedSongs.slice(0, idx)];
 
   // 首批：解析直链后立即开播
-  const firstBatch = ordered.slice(0, FIRST);
-  const resolvedFirst = await resolver(firstBatch);
+  const firstCount = localStart ? 1 : FIRST;
+  const firstBatch = ordered.slice(0, firstCount);
+  // 本地起播不调用 resolver，避免榜单等解析器为补 mid/直链发起网络请求。
+  const resolvedFirst = localStart ? firstBatch : await resolver(firstBatch);
   const enrichedFirst = await Promise.all(resolvedFirst.map(enrichLocalSong));
   // 已整曲缓存的在线曲目优先用本地文件
   const preferredFirst = await Promise.all(
@@ -454,14 +467,14 @@ export async function playSongsProgressive(
     return false;
   }
   // 其余歌曲立即以占位入队：本地路径/旧直链可直接播，否则挂占位地址等待替换
-  const rest = ordered.slice(FIRST);
+  const rest = ordered.slice(firstCount);
   pendingMap.clear();
   const pendingTracks = rest.map((s, i) => {
     const key = `pk-${session}-${i}`;
     pendingMap.set(key, {song: s, resolver});
     return {
       ...songToTrack(s),
-      url: s.localPath ?? s.url ?? PENDING_URL,
+      url: s.localPath ?? s.uri ?? s.filePath ?? s.url ?? PENDING_URL,
       pendingKey: key,
     } as Track;
   });
@@ -476,6 +489,11 @@ export async function playSongsProgressive(
   saveQueueSnapshot().catch(() => {});
 
   if (!rest.length) {
+    return true;
+  }
+
+  // 本地歌曲起播时不在后台批量解析在线地址；后续真正切到占位歌曲时再按需解析。
+  if (localStart) {
     return true;
   }
 

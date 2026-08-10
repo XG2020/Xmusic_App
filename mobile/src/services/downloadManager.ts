@@ -17,6 +17,7 @@ import {
   getDownloadCover,
 } from './settings';
 import type {Song} from '../types/music';
+import {markSongDownloaded} from './store';
 
 /**
  * 全局下载管理器：任务进度实时可见，完成/失败记录持久化为下载历史
@@ -263,6 +264,8 @@ async function runDownload(work: PendingWork) {
       }
     }
     await downloadCompanions(finalPath, {coverUrl, lyric, song, folderUri: folderPath});
+    // 下载完成后把本地路径同步回已经存在的收藏/本地歌单，离线播放不再依赖网络直链。
+    await markSongDownloaded(song, finalPath).catch(() => {});
     finishTask({
       ...task,
       status: 'done',

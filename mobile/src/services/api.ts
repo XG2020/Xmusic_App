@@ -259,7 +259,11 @@ export async function getPreferredSongUrls(mids: string[], force = false) {
 
 /** 分批解析歌曲播放直链（每批 50 个 mid，避免 URL 过长），保留本地歌曲 */
 export async function resolveSongUrls(songs: Song[]): Promise<Song[]> {
-  const mids = songs.map(s => s.mid!).filter(Boolean);
+  // 已经有本地文件的歌曲无需请求在线直链；离线歌单播放时避免无意义的网络等待。
+  const mids = songs
+    .filter(s => !s.localPath && !s.uri && !s.filePath)
+    .map(s => s.mid!)
+    .filter(Boolean);
   const urlMap: Record<string, string> = {};
   // 多批并行请求，大幅提升导入时检测可播放性的速度
   const tasks: Promise<Record<string, string>>[] = [];
@@ -274,7 +278,7 @@ export async function resolveSongUrls(songs: Song[]): Promise<Song[]> {
   }
   return songs
     .map(s => ({...s, url: (s.mid && urlMap[s.mid]) || s.url}))
-    .filter(s => !!s.url || !!s.localPath);
+    .filter(s => !!s.url || !!s.localPath || !!s.uri || !!s.filePath);
 }
 
 export async function getSongDetail(params: {mid?: string; id?: number}) {

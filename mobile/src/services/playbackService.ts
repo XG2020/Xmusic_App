@@ -1,6 +1,6 @@
 import TrackPlayer, {Event, State} from 'react-native-track-player';
 import {ToastAndroid} from 'react-native';
-import RNFS from 'react-native-fs';
+import {localSongFileExists} from './download';
 import {addRecentSongs} from './store';
 import {getPreferredSongUrls} from './api';
 import {getPlayQuality, wifiOnlyEnabled} from './settings';
@@ -75,12 +75,7 @@ export default async function playbackService() {
     }
     const isLocal = !!url && !/^https?:/i.test(url);
     if (isLocal) {
-      // content:// URI（Android 媒体库）由原生播放器直接管理，不做文件存在性检测
-      if (url.startsWith('content://')) {
-        return;
-      }
-      const path = url.replace(/^file:\/\//i, '');
-      const exists = await RNFS.exists(path).catch(() => false);
+      const exists = await localSongFileExists(url);
       if (!exists) {
         ToastAndroid.show(
           `「${tr.title}」本地文件不存在，已自动播放下一首`,

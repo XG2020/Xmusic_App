@@ -2,6 +2,23 @@ import RNFS from 'react-native-fs';
 import {NativeModules} from 'react-native';
 import {getDefaultDownloadDir, getDownloadDir} from './settings';
 import type {Song} from '../types/music';
+/** 校验本地音频是否仍存在；SAF content:// URI 通过原生 ContentResolver 校验。 */
+export async function localSongFileExists(path: string): Promise<boolean> {
+  if (!path) {
+    return false;
+  }
+  if (!path.startsWith('content://')) {
+    return RNFS.exists(path.replace(/^file:\/\//i, '')).catch(() => false);
+  }
+  if (NativeModules.LocalMusic?.fileExists) {
+    try {
+      return !!(await NativeModules.LocalMusic.fileExists(path));
+    } catch (e) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /** 图片下载请求头：腾讯 CDN 部分节点会拒绝无 UA 的请求（403） */
 export const IMAGE_HEADERS = {
