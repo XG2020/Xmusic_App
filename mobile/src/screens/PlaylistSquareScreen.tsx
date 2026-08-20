@@ -21,6 +21,7 @@ import {
 import {useFavPlaylistIds, toggleFavPlaylist} from '../services/store';
 import Icon from '../components/Icon';
 import {useTheme, Theme} from '../theme';
+import {isConnected, waitForNetworkState} from '../services/network';
 
 const PAGE_SIZE = 20;
 
@@ -69,6 +70,11 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
   const favIds = useFavPlaylistIds();
 
   const loadFirst = async (c: PlaylistCategory) => {
+    await waitForNetworkState();
+    if (!isConnected()) {
+      setLoadFailed(true);
+      return;
+    }
     setLoading(true);
     try {
       const res = await getPlaylistsByCategory(c.id, PAGE_SIZE, 1);
@@ -88,9 +94,11 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
   useEffect(() => {
     if (!loadedRef.current) {
       loadedRef.current = true;
-      getPlaylistCategories()
-        .then(setGroups)
-        .catch(() => {});
+      waitForNetworkState().then(() => {
+        if (isConnected()) {
+          getPlaylistCategories().then(setGroups).catch(() => {});
+        }
+      });
       loadFirst(cat);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

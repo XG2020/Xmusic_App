@@ -411,23 +411,23 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
       // 元数据损坏忽略
     }
   }
-  if (!out.coverUrl) {
-    if (isDocumentUri(fsPath)) {
-      out.coverUrl =
-        (await findSafSiblingFile(
-          fsPath,
-          `${companionStemFromPath(fsPath)}.jpg`,
-        )) ?? undefined;
-    }
+  // 本地封面优先于网络封面：离线播放时网络 URL 可能失效，不能阻止读取已下载 JPG。
+  let localCover: string | undefined;
+  if (isDocumentUri(fsPath)) {
+    localCover =
+      (await findSafSiblingFile(
+        fsPath,
+        `${companionStemFromPath(fsPath)}.jpg`,
+      )) ?? undefined;
   }
-  if (!out.coverUrl) {
+  if (!localCover) {
     for (const jpg of [`${base}.jpg`, `${fbBase}.jpg`]) {
       try {
         // stat 兼探测与校验：0 字节的坏封面文件视为不存在，退回线上直链
         const stat = await RNFS.stat(jpg);
         if (Number(stat.size) > 0) {
           // 路径含空格/中文/方括号，必须百分号编码，否则 RN Image 解析 file:// URI 失败
-          out.coverUrl = `file://${encodeURI(jpg).replace(/#/g, '%23')}`;
+          localCover = `file://${encodeURI(jpg).replace(/#/g, '%23')}`;
           break;
         }
       } catch (e) {
@@ -435,7 +435,9 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
       }
     }
   }
-  if (!out.coverUrl && metaCover) {
+  if (localCover) {
+    out.coverUrl = localCover;
+  } else if (!out.coverUrl && metaCover) {
     // 本地 .jpg 不存在时退回元数据里的在线封面直链
     out.coverUrl = metaCover;
   }
@@ -446,6 +448,14 @@ export async function enrichLocalSong(s: Song): Promise<Song> {
 export async function readLocalLyric(audioPath: string): Promise<string> {
   if (!audioPath) {
     return '';
+  }
+  // TrackPlayer 可能返回带百分号编码的 file:// URL，统一还原后再查找同名附件。
+  if (!audioPath.startsWith('content://')) {
+    try {
+      audioPath = decodeURI(audioPath);
+    } catch (e) {
+      // 路径编码损坏时继续使用原始路径
+    }
   }
   if (isDocumentUri(audioPath)) {
     const text = await readSafTextCompanion(

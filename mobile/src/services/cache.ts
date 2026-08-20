@@ -64,6 +64,7 @@ export async function cachedGet<T>(
     return running;
   }
   const promise = (async () => {
+    let stale: Entry | undefined;
     try {
       const raw = await AsyncStorage.getItem(PREFIX + key);
       if (raw) {
@@ -72,18 +73,27 @@ export async function cachedGet<T>(
           memSet(key, ent);
           return ent.v as T;
         }
-        AsyncStorage.removeItem(PREFIX + key).catch(() => {});
+        // 过期数据仍保留，网络不可用时用于离线展示；成功拉新后再覆盖。
+        stale = ent;
       }
     } catch (e) {
-      // 读缓存失败当作未命中
+      // 读取缓存失败，继续尝试网络请求
     }
-    const v = await fetcher();
-    if (!isEmpty(v)) {
-      const ent: Entry = {v, e: Date.now() + ttlMs};
-      memSet(key, ent);
-      AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
+    try {
+      const v = await fetcher();
+      if (!isEmpty(v)) {
+        const ent: Entry = {v, e: Date.now() + ttlMs};
+        memSet(key, ent);
+        AsyncStorage.setItem(PREFIX + key, JSON.stringify(ent)).catch(() => {});
+      }
+      return v;
+    } catch (e) {
+      if (stale) {
+        memSet(key, stale);
+        return stale.v as T;
+      }
+      throw e;
     }
-    return v;
   })();
   inFlight.set(key, promise);
   try {
@@ -130,7 +140,9 @@ export async function cacheTouch(key: string, ttlMs: number) {
  * 批量读缓存（不触发请求）：返回命中的 key->值 映射，未命中/过期的不含在内。
  * 供按 mid 粒度缓存播放直链等「批量键」场景使用。
  */
-export async function cachePeekMany<T>(keys: string[]): Promise<Map<string, T>> {
+export async function cachePeekMany<T>(
+  keys: string[],
+): Promise<Map<string, T>> {
   const now = Date.now();
   const out = new Map<string, T>();
   const missing: string[] = [];
@@ -163,6 +175,24 @@ export async function cachePeekMany<T>(keys: string[]): Promise<Map<string, T>> 
     }
   }
   return out;
+}
+
+/** 读取单个缓存值，允许使用过期数据；用于离线打开已收藏内容。 */
+export async function cachePeekStale<T>(key: string): Promise<T | undefined> {
+  const m = mem.get(key);
+  if (m) {
+    memTouch(key, m);
+    return m.v as T;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(PREFIX + key);
+    if (!raw) return undefined;
+    const ent = JSON.parse(raw) as Entry;
+    memSet(key, ent);
+    return ent.v as T;
+  } catch (e) {
+    return undefined;
+  }
 }
 
 /** 批量写缓存（内存 + 持久化），空值跳过 */

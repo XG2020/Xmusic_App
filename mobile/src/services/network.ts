@@ -20,6 +20,11 @@ export type NetType = 'wifi' | 'cellular' | 'none' | 'other';
 
 let currentType: NetType = 'other';
 let connected = true;
+let networkReady = false;
+let resolveNetworkReady: (() => void) | null = null;
+const networkReadyPromise = new Promise<void>(resolve => {
+  resolveNetworkReady = resolve;
+});
 // 本次软件启动内是否已允许流量播放（「仅一次」选项，冷启动重置）
 let allowCellularThisSession = false;
 // 断网时是否处于播放中：用于网络恢复后自动续播
@@ -124,6 +129,9 @@ async function onConnectivityChange(prev: boolean, now: boolean) {
 function handleChange(s: NetInfoState) {
   const prevConnected = connected;
   connected = !!s.isConnected;
+  networkReady = true;
+  resolveNetworkReady?.();
+  resolveNetworkReady = null;
   currentType = classify(s);
   onConnectivityChange(prevConnected, connected).catch(() => {});
   listeners.forEach(l => l(currentType, connected));
@@ -134,6 +142,15 @@ NetInfo.addEventListener(handleChange);
 NetInfo.fetch()
   .then(handleChange)
   .catch(() => {});
+
+/** 等待一次真实网络状态，避免离线冷启动误把在线曲目当成可联网曲目。 */
+export async function waitForNetworkState(timeoutMs = 1500): Promise<void> {
+  if (networkReady) return;
+  await Promise.race([
+    networkReadyPromise,
+    new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+  ]);
+}
 
 /** 当前是否已联网 */
 export function isConnected(): boolean {

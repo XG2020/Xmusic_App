@@ -32,5 +32,7 @@ export type Playlist = {
   name: string;
   creator?: { name?: string; id?: number };
   coverUrl?: string;
+  /** 服务端返回的歌单总歌曲数，用于检测接口分页/截断响应。 */
+  songCount?: number;
   songs: Song[];
 };

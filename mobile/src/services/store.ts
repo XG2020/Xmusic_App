@@ -1,8 +1,8 @@
 import {useEffect, useState} from 'react';
 import {InteractionManager} from 'react-native';
-import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {Song} from '../types/music';
+import {localSongFileExists} from './download';
 
 const RECENT_KEY = 'recent_songs';
 const FAV_KEY = 'fav_songs';
@@ -99,7 +99,9 @@ export function useRecentSongs(): Song[] {
 
 type DownloadedSongIndex = Record<string, string>;
 
-function downloadMatchKey(song: Pick<Song, 'mid' | 'title' | 'singer'>): string {
+function downloadMatchKey(
+  song: Pick<Song, 'mid' | 'title' | 'singer'>,
+): string {
   if (song.mid) return `mid:${song.mid}`;
   const artist = song.singer?.map(x => x.name).join(' / ') ?? '';
   return `title:${song.title}|artist:${artist}`;
@@ -109,10 +111,14 @@ async function readDownloadedIndex(): Promise<DownloadedSongIndex> {
   try {
     const raw = await AsyncStorage.getItem(DOWNLOADED_SONGS_KEY);
     return raw ? (JSON.parse(raw) as DownloadedSongIndex) : {};
-  } catch (e) { return {}; }
+  } catch (e) {
+    return {};
+  }
 }
 
-export async function getDownloadedSongPath(song: Song): Promise<string | undefined> {
+export async function getDownloadedSongPath(
+  song: Song,
+): Promise<string | undefined> {
   const index = await readDownloadedIndex();
   const indexed = index[downloadMatchKey(song)];
   if (indexed) {
@@ -121,11 +127,21 @@ export async function getDownloadedSongPath(song: Song): Promise<string | undefi
   // 兼容升级前已经完成的下载：旧记录没有独立索引，但任务 id 以 mid 开头。
   try {
     const raw = await AsyncStorage.getItem('download_history');
-    const history = raw ? (JSON.parse(raw) as Array<{id?: string; title?: string; path?: string; status?: string}>) : [];
-    const hit = history.find(item =>
-      item.status === 'done' &&
-      !!item.path &&
-      (song.mid ? item.id?.startsWith(`${song.mid}:`) : item.title === song.title),
+    const history = raw
+      ? (JSON.parse(raw) as Array<{
+          id?: string;
+          title?: string;
+          path?: string;
+          status?: string;
+        }>)
+      : [];
+    const hit = history.find(
+      item =>
+        item.status === 'done' &&
+        !!item.path &&
+        (song.mid
+          ? item.id?.startsWith(`${song.mid}:`)
+          : item.title === song.title),
     );
     return hit?.path;
   } catch (e) {
@@ -133,46 +149,88 @@ export async function getDownloadedSongPath(song: Song): Promise<string | undefi
   }
 }
 
-export async function markSongDownloaded(song: Song, path: string): Promise<void> {
+export async function markSongDownloaded(
+  song: Song,
+  path: string,
+): Promise<void> {
   if (!path) return;
   const index = await readDownloadedIndex();
   index[downloadMatchKey(song)] = path;
-  await AsyncStorage.setItem(DOWNLOADED_SONGS_KEY, JSON.stringify(index)).catch(() => {});
-  const [fav, playlists] = await Promise.all([readList(FAV_KEY), readLocalPlaylistsRaw()]);
-  const sameSong = (a: Song, b: Song) => a.mid && b.mid ? a.mid === b.mid : downloadMatchKey(a) === downloadMatchKey(b);
+  await AsyncStorage.setItem(DOWNLOADED_SONGS_KEY, JSON.stringify(index)).catch(
+    () => {},
+  );
+  const [fav, playlists] = await Promise.all([
+    readList(FAV_KEY),
+    readLocalPlaylistsRaw(),
+  ]);
+  const sameSong = (a: Song, b: Song) =>
+    a.mid && b.mid
+      ? a.mid === b.mid
+      : downloadMatchKey(a) === downloadMatchKey(b);
   let favChanged = false;
   const nextFav = fav.map(item => {
-    if (sameSong(item, song) && item.localPath !== path) { favChanged = true; return {...item, localPath: path, unplayable: undefined}; }
+    if (sameSong(item, song) && item.localPath !== path) {
+      favChanged = true;
+      return {...item, localPath: path, unplayable: undefined};
+    }
     return item;
   });
   let playlistChanged = false;
   const nextPlaylists = playlists.map(pl => {
     let changed = false;
     const nextSongs = pl.songs.map(item => {
-      if (sameSong(item, song) && item.localPath !== path) { changed = true; playlistChanged = true; return {...item, localPath: path, unplayable: undefined}; }
+      if (sameSong(item, song) && item.localPath !== path) {
+        changed = true;
+        playlistChanged = true;
+        return {...item, localPath: path, unplayable: undefined};
+      }
       return item;
     });
     return changed ? {...pl, songs: nextSongs} : pl;
   });
-  if (favChanged) await AsyncStorage.setItem(FAV_KEY, JSON.stringify(nextFav)).catch(() => {});
-  if (playlistChanged) await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(nextPlaylists)).catch(() => {});
-}
-
-async function indexedLocalPathExists(path: string): Promise<boolean> {
-  if (path.startsWith('content://')) {
-    // content:// 的最终存在性由播放服务通过 ContentResolver 校验。
-    return true;
-  }
-  return RNFS.exists(path.replace(/^file:\/\//i, '')).catch(() => false);
+  if (favChanged)
+    await AsyncStorage.setItem(FAV_KEY, JSON.stringify(nextFav)).catch(
+      () => {},
+    );
+  if (playlistChanged)
+    await AsyncStorage.setItem(
+      PLAYLISTS_KEY,
+      JSON.stringify(nextPlaylists),
+    ).catch(() => {});
 }
 
 export async function hydrateDownloadedSong(song: Song): Promise<Song> {
-  if (song.localPath || song.uri) return song;
-  const path = await getDownloadedSongPath(song);
-  if (!path || !(await indexedLocalPathExists(path))) {
-    return song;
+  const localCandidates = [
+    song.localPath,
+    song.uri,
+    song.filePath,
+    song.url && !/^https?:/i.test(song.url) ? song.url : undefined,
+  ].filter((path): path is string => !!path);
+  for (const path of [...new Set(localCandidates)]) {
+    if (await localSongFileExists(path)) {
+      return {
+        ...song,
+        localPath: path,
+        uri: undefined,
+        filePath: undefined,
+        unplayable: undefined,
+      };
+    }
   }
-  return {...song, localPath: path, unplayable: undefined};
+
+  // Drop stale local fields. Keep an HTTP URL or mid for online fallback.
+  const withoutMissingLocal: Song = {
+    ...song,
+    localPath: undefined,
+    uri: undefined,
+    filePath: undefined,
+    url: /^https?:/i.test(song.url ?? '') ? song.url : undefined,
+  };
+  const path = await getDownloadedSongPath(song);
+  if (!path || !(await localSongFileExists(path))) {
+    return withoutMissingLocal;
+  }
+  return {...withoutMissingLocal, localPath: path, unplayable: undefined};
 }
 
 export async function getFavSongs(): Promise<Song[]> {
@@ -198,7 +256,14 @@ export async function toggleFav(song: Song): Promise<boolean> {
 /** 批量合并到"我喜欢"（去重），返回新增数量 */
 export async function addFavSongs(songs: Song[]): Promise<number> {
   const list = await readList(FAV_KEY);
-  const fresh = songs.filter(s => !list.some(o => songKey(o) === songKey(s)));
+  const existing = new Set(list.map(songKey));
+  const incoming = new Set<string>();
+  const fresh = songs.filter(s => {
+    const key = songKey(s);
+    if (existing.has(key) || incoming.has(key)) return false;
+    incoming.add(key);
+    return true;
+  });
   if (fresh.length) {
     await AsyncStorage.setItem(FAV_KEY, JSON.stringify([...fresh, ...list]));
   }
@@ -218,6 +283,7 @@ export type LocalPlaylist = {
 };
 
 const PLAYLISTS_KEY = 'local_playlists';
+export const MAX_LOCAL_PLAYLIST_SONGS = 1000;
 
 export async function getLocalPlaylists(): Promise<LocalPlaylist[]> {
   const list = await readLocalPlaylistsRaw();
@@ -249,7 +315,7 @@ export async function createLocalPlaylist(
     id: `pl_${Date.now()}`,
     name: name || '未命名歌单',
     coverUrl,
-    songs,
+    songs: songs.slice(0, MAX_LOCAL_PLAYLIST_SONGS),
     createdAt: Date.now(),
     sourceId,
   };
@@ -269,7 +335,7 @@ export async function replaceLocalPlaylistSongs(
   if (!pl) {
     return undefined;
   }
-  pl.songs = songs;
+  pl.songs = songs.slice(0, MAX_LOCAL_PLAYLIST_SONGS);
   if (coverUrl) {
     pl.coverUrl = coverUrl;
   }
@@ -277,7 +343,9 @@ export async function replaceLocalPlaylistSongs(
   return pl;
 }
 
-export async function removeLocalPlaylist(id: string): Promise<LocalPlaylist[]> {
+export async function removeLocalPlaylist(
+  id: string,
+): Promise<LocalPlaylist[]> {
   const next = (await getLocalPlaylists()).filter(p => p.id !== id);
   await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(next));
   return next;
@@ -297,23 +365,47 @@ export async function renameLocalPlaylist(
   return list;
 }
 
-export async function getLocalPlaylist(id: string): Promise<LocalPlaylist | undefined> {
+export async function getLocalPlaylist(
+  id: string,
+): Promise<LocalPlaylist | undefined> {
   return (await getLocalPlaylists()).find(p => p.id === id);
 }
 
 /** 添加歌曲到本地歌单（按 songKey 去重），返回新增数量 */
-export async function addSongsToPlaylist(id: string, songs: Song[]): Promise<number> {
+export type PlaylistAddResult = {
+  added: number;
+  duplicateOnly: boolean;
+  limitReached: boolean;
+};
+
+export async function addSongsToPlaylist(
+  id: string,
+  songs: Song[],
+): Promise<PlaylistAddResult> {
   const list = await getLocalPlaylists();
   const pl = list.find(p => p.id === id);
   if (!pl) {
-    return 0;
+    return {added: 0, duplicateOnly: false, limitReached: false};
   }
-  const fresh = songs.filter(s => !pl.songs.some(o => songKey(o) === songKey(s)));
-  if (fresh.length) {
-    pl.songs = [...pl.songs, ...fresh];
+  const existing = new Set(pl.songs.map(songKey));
+  const incoming = new Set<string>();
+  const fresh = songs.filter(s => {
+    const key = songKey(s);
+    if (existing.has(key) || incoming.has(key)) return false;
+    incoming.add(key);
+    return true;
+  });
+  const capacity = Math.max(0, MAX_LOCAL_PLAYLIST_SONGS - pl.songs.length);
+  const toAdd = fresh.slice(0, capacity);
+  if (toAdd.length) {
+    pl.songs = [...pl.songs, ...toAdd];
     await AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(list));
   }
-  return fresh.length;
+  return {
+    added: toAdd.length,
+    duplicateOnly: fresh.length === 0,
+    limitReached: fresh.length > toAdd.length,
+  };
 }
 
 /** 将歌单（含"我喜欢"）中指定歌曲标记为不可播放（VIP/下架），列表灰显 */
@@ -366,7 +458,10 @@ export async function refreshFavPlayable(
   const playable = new Set(playableKeys);
   let changed = false;
   const next = list.map(s => {
-    const shouldUnplayable = s.localPath ? false : !playable.has(songKey(s));
+    const shouldUnplayable =
+      s.localPath || s.uri || s.filePath
+        ? false
+        : !playable.has(songKey(s));
     if (!!s.unplayable !== shouldUnplayable) {
       changed = true;
       return {...s, unplayable: shouldUnplayable || undefined};
@@ -474,4 +569,3 @@ export function useFavPlaylistIds(): Set<string> {
   }, []);
   return ids;
 }
-

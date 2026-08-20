@@ -77,7 +77,10 @@ export default function SongActionSheet({
     const ok = await playNext(song);
     // 自动消失的轻提示，不打断操作
     if (ok) {
-      ToastAndroid.show(`已添加为下一曲播放：${song.title}`, ToastAndroid.SHORT);
+      ToastAndroid.show(
+        `已添加为下一曲播放：${song.title}`,
+        ToastAndroid.SHORT,
+      );
     } else {
       ToastAndroid.show('操作失败：未获取到歌曲播放地址', ToastAndroid.SHORT);
     }
@@ -102,14 +105,18 @@ export default function SongActionSheet({
     if (!song) {
       return;
     }
-    const added = await addSongsToPlaylist(pl.id, [song]);
+    const result = await addSongsToPlaylist(pl.id, [song]);
     onClose();
-    if (added) {
+    if (result.added) {
       onChanged?.();
     }
     AppAlert.alert(
-      added ? `已添加到《${pl.name}》` : '歌曲已在该歌单中',
-      song.title,
+      result.limitReached
+        ? '歌单歌曲已达上限'
+        : result.added
+        ? `已添加到「${pl.name}」`
+        : '歌曲已在该歌单中',
+      result.limitReached ? '每个歌单最多 1000 首' : song.title,
     );
   };
 
@@ -136,7 +143,10 @@ export default function SongActionSheet({
     onClose();
     const ok = await startDownload(song);
     if (ok) {
-      ToastAndroid.show('已开始下载，进度可在下载管理中查看', ToastAndroid.SHORT);
+      ToastAndroid.show(
+        '已开始下载，进度可在下载管理中查看',
+        ToastAndroid.SHORT,
+      );
     } else {
       AppAlert.alert('无法下载', '该歌曲正在下载中或没有可用地址');
     }

@@ -2,6 +2,7 @@ import RNFS from 'react-native-fs';
 import {QUALITY_OPTIONS, cacheWhilePlayEnabled} from './settings';
 import type {Quality} from './settings';
 import type {Song} from '../types/music';
+import {localSongFileExists} from './download';
 
 /**
  * 边播边缓存（参考网易云/QQ音乐做法）：
@@ -100,6 +101,21 @@ export async function anyCachedSongPath(mid: string): Promise<string | null> {
  * 供播放前网络门禁放行：已缓存歌曲无网络时也应可直接播放，不消耗流量。
  * deep=true（离线场景）时放宽到任一已缓存音质。
  */
+async function existingLocalPath(song: Song): Promise<string | null> {
+  const paths = [
+    song.localPath,
+    song.uri,
+    song.filePath,
+    song.url && !/^https?:/i.test(song.url) ? song.url : undefined,
+  ].filter((path): path is string => !!path);
+  for (const path of [...new Set(paths)]) {
+    if (await localSongFileExists(path)) {
+      return path;
+    }
+  }
+  return null;
+}
+
 export async function isOfflinePlayable(
   song: Song,
   quality: Quality,
@@ -108,11 +124,8 @@ export async function isOfflinePlayable(
   if (!song) {
     return false;
   }
-  if (song.localPath) {
+  if (await existingLocalPath(song)) {
     return true;
-  }
-  if (song.url && !/^https?:/i.test(song.url)) {
-    return true; // 已是本地/缓存直链
   }
   if (!song.mid) {
     return false;
@@ -122,7 +135,6 @@ export async function isOfflinePlayable(
   }
   return deep ? !!(await anyCachedSongPath(song.mid)) : false;
 }
-
 /**
  * 播放前优先替换为本地缓存：在线曲目（有 mid、直链为 http）若已整曲缓存，
  * 则把 url 换成本地文件路径，实现离线/秒开播放。
@@ -134,19 +146,31 @@ export async function preferCachedSong(
   quality: Quality,
   allowAnyQuality = false,
 ): Promise<Song> {
-  if (song.localPath || !song.mid) {
-    return song;
+  const localPath = await existingLocalPath(song);
+  if (localPath) {
+    return {
+      ...song,
+      localPath,
+      uri: undefined,
+      filePath: undefined,
+    };
   }
-  if (!/^https?:/i.test(song.url ?? '')) {
-    return song;
+  const withoutMissingLocal = {
+    ...song,
+    localPath: undefined,
+    uri: undefined,
+    filePath: undefined,
+    url: /^https?:/i.test(song.url ?? '') ? song.url : undefined,
+  };
+  if (!song.mid) {
+    return withoutMissingLocal;
   }
   let p = await cachedSongPath(song.mid, quality);
   if (!p && allowAnyQuality) {
     p = await anyCachedSongPath(song.mid);
   }
-  return p ? {...song, url: `file://${p}`} : song;
+  return p ? {...withoutMissingLocal, url: `file://${p}`} : withoutMissingLocal;
 }
-
 /**
  * 后台缓存当前在线曲目的整曲文件；下载完成仅落盘、不打断当前播放。
  * 已缓存/正在缓存/无有效直链时直接跳过。

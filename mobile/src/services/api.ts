@@ -5,6 +5,7 @@ import {getPlayQuality} from './settings';
 import {
   cachedGet,
   cachePeekMany,
+  cachePeekStale,
   cachePutMany,
   cacheTouch,
   dropCache,
@@ -196,7 +197,7 @@ export async function getPlaylistsByCategory(
  * 重复播同一歌单/重启恢复队列时命中缓存直接用，只请求未命中的 mid。
  * force=true 绕过缓存全量重取（播放失败重解析时用）。
  * 接口偶发对部分 mid 返回空直链（并非真的无版权/下架），会误判为「不可播放」导致
- * 无法点击播放；对仍为空的 mid 有界重试几次（间隔递增），只接受非空直链。
+ * 无法点击播放；当前单次请求只接受非空直链，后续播放时可按需强制刷新。
  */
 export async function getSongUrls(
   mids: string[],
@@ -225,10 +226,6 @@ export async function getSongUrls(
   let pending = misses;
   const MAX_ATTEMPTS = 1;
   for (let attempt = 0; attempt < MAX_ATTEMPTS && pending.length; attempt++) {
-    if (attempt > 0) {
-      // 递增退避：250ms、500ms，给服务端瞬时空返回一点恢复时间
-      await delay(attempt * 250);
-    }
     try {
       const {data} = await api.get('/api/song/url', {
         params: {mid: pending.join(','), quality},
@@ -239,9 +236,7 @@ export async function getSongUrls(
           fresh[mid] = map[mid];
         }
       }
-    } catch (e) {
-      // 本次请求失败：保留 pending，下一轮重试
-    }
+    } catch (e) {}
     pending = pending.filter(mid => !fresh[mid]);
   }
   cachePutMany(
@@ -254,7 +249,19 @@ export async function getSongUrls(
 /** 按用户设置的播放音质批量取播放链接（服务端不可用时自动降级） */
 export async function getPreferredSongUrls(mids: string[], force = false) {
   const quality = await getPlayQuality();
-  return getSongUrls(mids, quality, force);
+  // API 文档未规定 mid 参数长度上限；按 50 首拆分，避免大歌单请求超过 URL/网关限制。
+  if (mids.length <= 50) {
+    return getSongUrls(mids, quality, force);
+  }
+  const unique = [...new Set(mids.filter(Boolean))];
+  const batches: string[][] = [];
+  for (let i = 0; i < unique.length; i += 50) {
+    batches.push(unique.slice(i, i + 50));
+  }
+  const results = await Promise.all(
+    batches.map(batch => getSongUrls(batch, quality, force).catch(() => ({}))),
+  );
+  return Object.assign({}, ...results);
 }
 
 /** 分批解析歌曲播放直链（每批 50 个 mid，避免 URL 过长），保留本地歌曲 */
@@ -376,6 +383,30 @@ export async function resolvePlaylistId(
 }
 
 /** 歌单：兼容 QQ 原始结构（dirinfo/songlist）与文档结构（name/songs） */
+async function requestPlaylist(id: number, num = 2000): Promise<Playlist> {
+  const {data} = await api.get('/api/playlist', {params: {id, num}});
+  const d = data?.data ?? {};
+  const rawSongs: any[] = d.songlist ?? d.songs ?? [];
+  const info = d.dirinfo ?? {};
+  const countRaw =
+    info.songnum ??
+    info.song_count ??
+    info.songCount ??
+    d.songnum ??
+    d.song_count ??
+    d.songCount ??
+    d.total;
+  const songCount = Number(countRaw);
+  return {
+    id: info.id ?? d.id ?? id,
+    name: info.title ?? d.name ?? '',
+    coverUrl: httpsUrl(info.picurl),
+    songCount:
+      Number.isFinite(songCount) && songCount > 0 ? songCount : undefined,
+    songs: rawSongs.map(s => normalizeSong(s)),
+  } as Playlist;
+}
+
 export async function getPlaylist(id: number): Promise<Playlist> {
   // 收藏的歌单用 7 天长缓存（秒开、弱网可用），普通歌单 30 分钟；
   // 「同步更新」走 getPlaylistFresh 绕过缓存拉最新
@@ -383,19 +414,26 @@ export async function getPlaylist(id: number): Promise<Playlist> {
   return cachedGet(
     `playlist:${id}:full`,
     faved ? TTL_DETAIL : TTL_PLAYLIST,
-    async () => {
-      // num 显式传大值：服务端默认只返回 100 首，导入大歌单会被截断
-      const {data} = await api.get('/api/playlist', {params: {id, num: 2000}});
-      const d = data?.data ?? {};
-      const rawSongs: any[] = d.songlist ?? d.songs ?? [];
-      return {
-        id: d.dirinfo?.id ?? d.id ?? id,
-        name: d.dirinfo?.title ?? d.name ?? '',
-        coverUrl: httpsUrl(d.dirinfo?.picurl),
-        songs: rawSongs.map(s => normalizeSong(s)),
-      } as Playlist;
-    },
+    () => requestPlaylist(id, 2000),
   );
+}
+
+/** 导入/同步专用拉取：绕过旧缓存，单次请求并保留服务端总数供界面提示。 */
+export async function getPlaylistStable(id: number): Promise<Playlist> {
+  const faved = await isFavPlaylist(id).catch(() => false);
+  const result = await requestPlaylist(id, 2000);
+  cachePutMany(
+    [[`playlist:${id}:full`, result]],
+    faved ? TTL_DETAIL : TTL_PLAYLIST,
+  );
+  return result;
+}
+
+/** 离线打开收藏歌单时读取最近一次成功缓存，即使缓存 TTL 已过期也可用。 */
+export async function getCachedPlaylist(
+  id: number | string,
+): Promise<Playlist | undefined> {
+  return cachePeekStale<Playlist>(`playlist:${id}:full`);
 }
 
 /** 收藏歌单时调用：把已缓存的歌单内容续期为长缓存（无缓存时不做事） */
@@ -406,7 +444,7 @@ export function pinPlaylistCache(id: number | string) {
 /** 绕过缓存拉取最新歌单内容（收藏/导入歌单「同步更新」用） */
 export async function getPlaylistFresh(id: number): Promise<Playlist> {
   dropCache(`playlist:${id}:full`);
-  return getPlaylist(id);
+  return getPlaylistStable(id);
 }
 
 export async function getSinger(mid: string) {

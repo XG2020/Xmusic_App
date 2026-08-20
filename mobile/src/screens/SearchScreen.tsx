@@ -22,6 +22,7 @@ import {
 } from '../services/api';
 import type {Song} from '../types/music';
 import {playSongs} from '../services/player';
+import {isConnected, waitForNetworkState} from '../services/network';
 import {
   autoOpenPlayerEnabled,
   getSearchHistory,
@@ -32,8 +33,14 @@ import {
   addRecentSongs,
   useFavPlaylistIds,
   toggleFavPlaylist,
+  addFavSongs,
+  addSongsToPlaylist,
+  getLocalPlaylists,
+  songKey,
+  LocalPlaylist,
 } from '../services/store';
 import SongActionSheet from '../components/SongActionSheet';
+import {startDownload} from '../services/downloadManager';
 import Icon from '../components/Icon';
 import {formatDuration} from '../utils/format';
 import {formatListen} from './PlaylistSquareScreen';
@@ -65,6 +72,9 @@ export default function SearchScreen({navigation, route}: any) {
   const [results, setResults] = useState<Song[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
+  // 搜索歌曲支持长按进入多选，批量添加到其他歌单
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   // 分页：query 为已发起搜索的关键词，滚动到底自动加载下一页
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -100,9 +110,11 @@ export default function SearchScreen({navigation, route}: any) {
 
   /** 拉取一页歌曲搜索结果并补充封面和播放直链 */
   const fetchPage = async (kw: string, pageNo: number): Promise<Song[]> => {
-    const list = ((await search(kw, 'song', PAGE_SIZE, pageNo)) ?? []) as Song[];
+    const list = ((await search(kw, 'song', PAGE_SIZE, pageNo)) ??
+      []) as Song[];
     const mids = list.map(x => x.mid!).filter(Boolean);
-    const urls = mids.length ? await getPreferredSongUrls(mids) : {};
+    const urls =
+      mids.length && isConnected() ? await getPreferredSongUrls(mids) : {};
     return list.map(s => ({
       ...s,
       coverUrl: albumCoverUrl(s.album),
@@ -141,6 +153,11 @@ export default function SearchScreen({navigation, route}: any) {
     if (!kw) {
       return;
     }
+    await waitForNetworkState();
+    if (!isConnected()) {
+      AppAlert.alert('当前离线', '搜索在线歌曲需要网络连接，本地歌曲可在“我的”或“本地音乐”中使用');
+      return;
+    }
     // 新关键词：两类旧结果都作废，先拉当前分类，另一类切过去时懒加载
     setResults([]);
     setHasMore(false);
@@ -150,7 +167,9 @@ export default function SearchScreen({navigation, route}: any) {
     if (ok) {
       setQuery(kw);
       // 搜索成功后记入历史（去重置顶）
-      addSearchHistory(kw).then(setHistory).catch(() => {});
+      addSearchHistory(kw)
+        .then(setHistory)
+        .catch(() => {});
     }
   };
 
@@ -226,6 +245,95 @@ export default function SearchScreen({navigation, route}: any) {
     }
   };
 
+  const enterBatch = (song?: Song) => {
+    setSelectedKeys(song ? new Set([songKey(song)]) : new Set());
+    setBatchMode(true);
+  };
+
+  const exitBatch = () => {
+    setBatchMode(false);
+    setSelectedKeys(new Set());
+  };
+
+  const toggleBatchSong = (song: Song) => {
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      const key = songKey(song);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const selectedSongs = results.filter(s => selectedKeys.has(songKey(s)));
+
+  const batchAddToPlaylist = async () => {
+    if (!selectedSongs.length) return;
+    let local: LocalPlaylist[];
+    try {
+      local = await getLocalPlaylists();
+    } catch (e) {
+      AppAlert.alert('读取歌单失败', '请稍后重试');
+      return;
+    }
+    AppAlert.alert('批量添加到歌单', '选择目标歌单', [
+      {
+        text: `我喜欢（${selectedSongs.length} 首）`,
+        onPress: async () => {
+          try {
+            const added = await addFavSongs(selectedSongs);
+            AppAlert.alert('已添加到“我喜欢”', added ? `新增 ${added} 首` : '歌曲均已存在');
+            exitBatch();
+          } catch (e) {
+            AppAlert.alert('添加失败', '请稍后重试');
+          }
+        },
+      },
+      ...local.map((pl: LocalPlaylist) => ({
+        text: `${pl.name}（${pl.songs.length} 首）`,
+        onPress: async () => {
+          try {
+            const result = await addSongsToPlaylist(pl.id, selectedSongs);
+            AppAlert.alert(result.limitReached ? '歌单歌曲已达上限' : `已添加到「${pl.name}」`, result.limitReached ? `已添加 ${result.added} 首，每个歌单最多 1000 首` : result.added ? `新增 ${result.added} 首，重复歌曲已自动去重` : '歌曲已全部存在，无需重复添加');
+            exitBatch();
+          } catch (e) {
+            AppAlert.alert('添加失败', '请稍后重试');
+          }
+        },
+      })),
+      {text: '取消', style: 'cancel' as const},
+    ]);
+  };
+
+  /** 将所选搜索结果逐首加入全局下载队列。 */
+  const batchDownload = async () => {
+    const targets = selectedSongs.filter(s => !s.localPath && !s.uri && !s.filePath);
+    if (!targets.length) {
+      AppAlert.alert('无需下载', '所选歌曲均已在本地');
+      return;
+    }
+    // 先退出多选，避免解析多首下载地址期间界面看起来没有响应。
+    exitBatch();
+    let started = 0;
+    for (const song of targets) {
+      try {
+        if (await startDownload(song)) started += 1;
+      } catch (e) {
+        // 单首解析/入队失败不应中断其余歌曲。
+      }
+    }
+    AppAlert.alert(
+      started ? '已加入下载队列' : '无法下载',
+      started
+        ? `共 ${started} 首，进度可在下载管理中查看${
+            started < targets.length
+              ? `；另有 ${targets.length - started} 首正在下载或暂无可用地址`
+              : ''
+          }`
+        : '所选歌曲正在下载中或没有可用地址',
+    );
+  };
+
   const playAt = (index: number) => {
     addRecentSongs([results[index]]);
     playSongs(results, index);
@@ -249,7 +357,20 @@ export default function SearchScreen({navigation, route}: any) {
       <TouchableOpacity
         style={styles.itemMain}
         activeOpacity={0.7}
-        onPress={() => playAt(index)}>
+        onPress={() => (batchMode ? toggleBatchSong(item) : playAt(index))}
+        onLongPress={() => enterBatch(item)}
+        delayLongPress={400}>
+        {batchMode && (
+          <View
+            style={[
+              styles.batchCheckbox,
+              selectedKeys.has(songKey(item)) && styles.batchCheckboxOn,
+            ]}>
+            {selectedKeys.has(songKey(item)) && (
+              <Text style={styles.batchCheckboxTick}>✓</Text>
+            )}
+          </View>
+        )}
         {item.coverUrl ? (
           <Image
             source={{uri: item.coverUrl}}
@@ -272,12 +393,14 @@ export default function SearchScreen({navigation, route}: any) {
         </View>
         <Text style={styles.duration}>{formatDuration(item.interval)}</Text>
       </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.moreBtn}
-        onPress={() => setActionSong(item)}
-        hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-        <Icon name="more" size={16} style={styles.moreIcon} />
-      </TouchableOpacity>
+      {!batchMode && (
+        <TouchableOpacity
+          style={styles.moreBtn}
+          onPress={() => setActionSong(item)}
+          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+          <Icon name="more" size={16} style={styles.moreIcon} />
+        </TouchableOpacity>
+      )}
     </View>
   );
 
@@ -365,12 +488,16 @@ export default function SearchScreen({navigation, route}: any) {
     <View style={[styles.container, !!skin.bg && styles.transparentBg]}>
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.searchBar}>
-          <TouchableOpacity style={styles.back} onPress={() => navigation.goBack()}>
+          <TouchableOpacity
+            style={styles.back}
+            onPress={() => navigation.goBack()}>
             <Text style={styles.backText}>‹</Text>
           </TouchableOpacity>
           <TextInput
             style={styles.input}
-            placeholder={tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'}
+            placeholder={
+              tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'
+            }
             placeholderTextColor={t.sub}
             value={keyword}
             onChangeText={setKeyword}
@@ -388,107 +515,169 @@ export default function SearchScreen({navigation, route}: any) {
             styles.body,
             {opacity: bodyEntry, transform: [{translateY: bodyTranslateY}]},
           ]}>
-
-      {/* 结果分类 tab（文字+下划线风格）：歌曲 / 歌单，仅在发起搜索后显示 */}
-        {!!query && (
-          <View style={styles.typeTabs}>
-            <TouchableOpacity
-              style={styles.typeTab}
-              onPress={() => switchTab('song')}>
-              <Text
-                style={[styles.typeTabText, isSong && styles.typeTabTextActive]}>
-                歌曲
-              </Text>
-              <View style={[styles.typeTabLine, isSong && styles.typeTabLineOn]} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.typeTab}
-              onPress={() => switchTab('playlist')}>
-              <Text
-                style={[styles.typeTabText, !isSong && styles.typeTabTextActive]}>
-                歌单
-              </Text>
-              <View
-                style={[styles.typeTabLine, !isSong && styles.typeTabLineOn]}
-              />
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {isSong && results.length > 0 && (
-          <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
-            <Text style={styles.playAllIcon}>▶</Text>
-            <Text style={styles.playAllText}>播放全部 ({results.length})</Text>
-          </TouchableOpacity>
-        )}
-
-      {/* 未发起搜索时展示历史记录 */}
-        {!loading && !query && history.length > 0 && (
-          <View style={styles.historyWrap}>
-            <View style={styles.historyHeader}>
-              <Text style={styles.historyTitle}>搜索历史</Text>
+          {/* 结果分类 tab（文字+下划线风格）：歌曲 / 歌单，仅在发起搜索后显示 */}
+          {!!query && (
+            <View style={styles.typeTabs}>
               <TouchableOpacity
-                onPress={onClearHistory}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-                <Icon name="garbage" size={30} color={t.sub} />
+                style={styles.typeTab}
+                onPress={() => switchTab('song')}>
+                <Text
+                  style={[
+                    styles.typeTabText,
+                    isSong && styles.typeTabTextActive,
+                  ]}>
+                  歌曲
+                </Text>
+                <View
+                  style={[styles.typeTabLine, isSong && styles.typeTabLineOn]}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.typeTab}
+                onPress={() => switchTab('playlist')}>
+                <Text
+                  style={[
+                    styles.typeTabText,
+                    !isSong && styles.typeTabTextActive,
+                  ]}>
+                  歌单
+                </Text>
+                <View
+                  style={[styles.typeTabLine, !isSong && styles.typeTabLineOn]}
+                />
               </TouchableOpacity>
             </View>
-            <View style={styles.historyChips}>
-              {history.map(kw => (
-                <TouchableOpacity
-                  key={kw}
-                  style={styles.historyChip}
-                  onPress={() => onPickHistory(kw)}>
-                  <Text style={styles.historyChipText} numberOfLines={1}>
-                    {kw}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        )}
+          )}
 
-        {loading ? (
-          <ActivityIndicator style={styles.loading} color={t.primary} size="large" />
-        ) : (
-          <FlatList
-            showsVerticalScrollIndicator={false}
-            data={listData}
-            keyExtractor={(item, i) =>
-              isSong
-                ? `${item.mid ?? item.title}-${i}`
-                : `${item.dissid}-${i}`
-            }
-            initialNumToRender={12}
-            maxToRenderPerBatch={16}
-            windowSize={9}
-            removeClippedSubviews
-            onEndReached={loadMore}
-            onEndReachedThreshold={0.3}
-            ListEmptyComponent={
-              query ? (
-                <Text style={styles.emptyText}>
-                  {isSong ? '没有找到相关歌曲' : '没有找到相关歌单'}
+          {isSong && results.length > 0 && (
+            <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
+              <Text style={styles.playAllIcon}>▶</Text>
+              <Text style={styles.playAllText}>
+                播放全部 ({results.length})
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {isSong && batchMode && (
+            <View style={styles.batchBar}>
+              <TouchableOpacity
+                onPress={() =>
+                  setSelectedKeys(
+                    selectedKeys.size === results.length
+                      ? new Set()
+                      : new Set(results.map(songKey)),
+                  )
+                }>
+                <Text style={styles.batchAction}>全选</Text>
+              </TouchableOpacity>
+              <Text style={styles.batchCount}>已选 {selectedKeys.size} 首</Text>
+              <TouchableOpacity
+                disabled={!selectedKeys.size}
+                onPress={batchAddToPlaylist}>
+                <Text
+                  style={[
+                    styles.batchAction,
+                    !selectedKeys.size && styles.batchDisabled,
+                  ]}>
+                  添加到歌单
                 </Text>
-              ) : null
-            }
-            ListFooterComponent={
-              loadingMore ? (
-                <ActivityIndicator style={styles.footerLoading} color={t.primary} />
-              ) : loadMoreFailed ? (
-                <TouchableOpacity style={styles.footerRetry} onPress={loadMore}>
-                  <Text style={styles.footerRetryText}>加载失败，点击重试</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                disabled={!selectedKeys.size}
+                onPress={batchDownload}>
+                <Text
+                  style={[
+                    styles.batchAction,
+                    !selectedKeys.size && styles.batchDisabled,
+                  ]}>
+                  下载
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={exitBatch}>
+                <Text style={styles.batchAction}>完成</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {/* 未发起搜索时展示历史记录 */}
+          {!loading && !query && history.length > 0 && (
+            <View style={styles.historyWrap}>
+              <View style={styles.historyHeader}>
+                <Text style={styles.historyTitle}>搜索历史</Text>
+                <TouchableOpacity
+                  onPress={onClearHistory}
+                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+                  <Icon name="garbage" size={30} color={t.sub} />
                 </TouchableOpacity>
-              ) : listData.length > 0 && !(isSong ? hasMore : plHasMore) ? (
-                <Text style={styles.footerEnd}>没有更多结果了</Text>
-              ) : null
-            }
-            renderItem={isSong ? renderSongItem : (renderPlItem as any)}
-          />
-        )}
+              </View>
+              <View style={styles.historyChips}>
+                {history.map(kw => (
+                  <TouchableOpacity
+                    key={kw}
+                    style={styles.historyChip}
+                    onPress={() => onPickHistory(kw)}>
+                    <Text style={styles.historyChipText} numberOfLines={1}>
+                      {kw}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
 
+          {loading ? (
+            <ActivityIndicator
+              style={styles.loading}
+              color={t.primary}
+              size="large"
+            />
+          ) : (
+            <FlatList
+              showsVerticalScrollIndicator={false}
+              data={listData}
+              keyExtractor={(item, i) =>
+                isSong
+                  ? `${item.mid ?? item.title}-${i}`
+                  : `${item.dissid}-${i}`
+              }
+              initialNumToRender={12}
+              maxToRenderPerBatch={16}
+              windowSize={9}
+              removeClippedSubviews
+              onEndReached={loadMore}
+              onEndReachedThreshold={0.3}
+              ListEmptyComponent={
+                query ? (
+                  <Text style={styles.emptyText}>
+                    {isSong ? '没有找到相关歌曲' : '没有找到相关歌单'}
+                  </Text>
+                ) : null
+              }
+              ListFooterComponent={
+                loadingMore ? (
+                  <ActivityIndicator
+                    style={styles.footerLoading}
+                    color={t.primary}
+                  />
+                ) : loadMoreFailed ? (
+                  <TouchableOpacity
+                    style={styles.footerRetry}
+                    onPress={loadMore}>
+                    <Text style={styles.footerRetryText}>
+                      加载失败，点击重试
+                    </Text>
+                  </TouchableOpacity>
+                ) : listData.length > 0 && !(isSong ? hasMore : plHasMore) ? (
+                  <Text style={styles.footerEnd}>没有更多结果了</Text>
+                ) : null
+              }
+              renderItem={isSong ? renderSongItem : (renderPlItem as any)}
+            />
+          )}
         </Animated.View>
-        <SongActionSheet song={actionSong} onClose={() => setActionSong(null)} />
+        <SongActionSheet
+          song={actionSong}
+          onClose={() => setActionSong(null)}
+        />
       </SafeAreaView>
     </View>
   );
@@ -541,6 +730,29 @@ const createStyles = (t: Theme) =>
       backgroundColor: 'transparent',
     },
     typeTabLineOn: {backgroundColor: t.primary},
+    batchBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      backgroundColor: t.panel ?? t.card,
+    },
+    batchAction: {color: t.primary, fontSize: 13, fontWeight: '700'},
+    batchCount: {flex: 1, color: t.sub, fontSize: 12},
+    batchDisabled: {opacity: 0.45},
+    batchCheckbox: {
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+      borderWidth: 1.5,
+      borderColor: t.sub,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 6,
+    },
+    batchCheckboxOn: {backgroundColor: t.primary, borderColor: t.primary},
+    batchCheckboxTick: {color: '#fff', fontSize: 12, fontWeight: '700'},
     playAll: {
       flexDirection: 'row',
       alignItems: 'center',

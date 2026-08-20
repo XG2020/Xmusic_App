@@ -20,6 +20,7 @@ import Icon from '../components/Icon';
 import PlaylistSquareScreen from './PlaylistSquareScreen';
 import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
+import {isConnected, waitForNetworkState} from '../services/network';
 
 /**
  * 首页固定顶栏（overlay）：推荐｜歌单 双标题 + 下载入口 + 搜索栏。
@@ -293,6 +294,11 @@ export default function HomeScreen({navigation, topPad = 0}: any) {
   const [rankError, setRankError] = useState(false);
 
   const loadRanks = useCallback(async (force?: boolean) => {
+    await waitForNetworkState();
+    if (!isConnected()) {
+      setRankError(true);
+      return;
+    }
     try {
       const list = await getTopGroups(force);
       setRanks(list.slice(0, 6));

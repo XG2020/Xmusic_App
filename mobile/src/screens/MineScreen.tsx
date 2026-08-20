@@ -34,8 +34,8 @@ import {
   FavPlaylist,
 } from '../services/store';
 import {
-  getPlaylist,
   getPlaylistFresh,
+  getPlaylistStable,
   resolvePlaylistId,
   resolveSongUrls,
 } from '../services/api';
@@ -128,26 +128,30 @@ export default function MineScreen({navigation, route}: any) {
 
   /** 导入结果二级弹窗：选择合并到哪个已有歌单（我喜欢 + 自定义歌单） */
   const pickMergeTarget = (songs: Song[]) => {
-    AppAlert.alert('合并到已有歌单', '选择要合并到的歌单：', [
+    AppAlert.alert('合并到已有歌单', '选择要合并的歌单', [
       {
-        text: `我喜欢（${favs.length}首）`,
+        text: `我喜欢（${favs.length} 首）`,
         onPress: async () => {
           const added = await addFavSongs(songs);
           reload();
           AppAlert.alert(
-            '已合并到《我喜欢》',
+            '已合并到“我喜欢”',
             added ? `新增 ${added} 首（已自动去重）` : '歌曲均已存在，无新增',
           );
         },
       },
       ...playlists.map(pl => ({
-        text: `${pl.name}（${pl.songs.length}首）`,
+        text: `${pl.name}（${pl.songs.length} 首）`,
         onPress: async () => {
-          const added = await addSongsToPlaylist(pl.id, songs);
+          const result = await addSongsToPlaylist(pl.id, songs);
           reload();
           AppAlert.alert(
-            `已合并到《${pl.name}》`,
-            added ? `新增 ${added} 首（已自动去重）` : '歌曲均已存在，无新增',
+            result.limitReached ? '歌单歌曲已达上限' : `已合并到「${pl.name}」`,
+            result.limitReached
+              ? `已添加 ${result.added} 首，每个歌单最多 1000 首`
+              : result.added
+              ? `新增 ${result.added} 首，重复歌曲已自动去重`
+              : '歌曲已全部存在，无需重复添加',
           );
         },
       })),
@@ -165,7 +169,7 @@ export default function MineScreen({navigation, route}: any) {
         AppAlert.alert('无法识别', '请粘贴 QQ 音乐歌单分享链接或输入歌单 ID');
         return;
       }
-      const data = await getPlaylist(id);
+      const data = await getPlaylistStable(id);
       const rawSongs = data?.songs ?? [];
       if (!rawSongs.length) {
         AppAlert.alert('导入失败', '歌单为空或不存在');
@@ -185,26 +189,34 @@ export default function MineScreen({navigation, route}: any) {
         // 检测失败不阻断导入，后续播放时会自动补标
       }
       const name = data?.name || `歌单 ${id}`;
+      const expectedCount = data?.songCount;
+      const incompleteNotice =
+        expectedCount && expectedCount !== songs.length
+          ? `\n接口本次返回 ${songs.length} 首（包含标灰歌曲），歌单实际约 ${expectedCount} 首；导入完成后可长按歌单选择“同步更新”校正。`
+          : '';
       AppAlert.alert(
         `《${name}》`,
         `共 ${songs.length} 首歌曲${
-          blocked > 0 ? `，其中 ${blocked} 首无法播放（需要VIP或已下架）将标灰` : ''
-        }，选择导入方式：`,
+          blocked > 0
+            ? `，其中 ${blocked} 首无法播放（需要VIP或已下架）将标灰`
+            : ''
+        }${incompleteNotice}，选择导入方式：`,
         [
-        {
-          text: '新建本地歌单',
-          onPress: async () => {
-            // 记录来源歌单 ID，供后续「同步更新」跟随原歌单
-            await createLocalPlaylist(name, songs, data?.coverUrl, id);
-            reload();
+          {
+            text: '新建本地歌单',
+            onPress: async () => {
+              // 记录来源歌单 ID，供后续「同步更新」跟随原歌单
+              await createLocalPlaylist(name, songs, data?.coverUrl, id);
+              reload();
+            },
           },
-        },
-        {
-          text: '合并到已有歌单',
-          onPress: () => pickMergeTarget(songs),
-        },
-        {text: '取消', style: 'cancel'},
-      ]);
+          {
+            text: '合并到已有歌单',
+            onPress: () => pickMergeTarget(songs),
+          },
+          {text: '取消', style: 'cancel'},
+        ],
+      );
     } catch (e) {
       AppAlert.alert('导入失败', '请检查网络或确认歌单是否公开');
     } finally {
@@ -258,14 +270,15 @@ export default function MineScreen({navigation, route}: any) {
     setImporting(true);
     try {
       const data = await getPlaylistFresh(Number(pl.id));
+      const total = data?.songCount ?? data?.songs?.length ?? 0;
       await updateFavPlaylistMeta(pl.id, {
         name: data?.name || pl.name,
         coverUrl: data?.coverUrl ?? pl.coverUrl,
-        songCount: data?.songs?.length ?? 0,
+        songCount: total,
       });
       AppAlert.alert(
         '同步完成',
-        `《${data?.name || pl.name}》最新共 ${data?.songs?.length ?? 0} 首`,
+        `《${data?.name || pl.name}》最新共 ${total} 首`,
       );
     } catch (e) {
       AppAlert.alert('同步失败', '请检查网络或确认歌单是否公开');
@@ -313,12 +326,17 @@ export default function MineScreen({navigation, route}: any) {
       AppAlert.alert('我喜欢', '还没有喜欢的歌曲');
       return;
     }
-    AppAlert.alert(`《我喜欢》${favs.length}首`, undefined, [
-      {text: '更新可播放状态', onPress: () => refreshFavStatus()},
-      {text: '取消', style: 'cancel'},
-    ], {
-      buttonLayout: 'vertical',
-    });
+    AppAlert.alert(
+      `《我喜欢》${favs.length}首`,
+      undefined,
+      [
+        {text: '更新可播放状态', onPress: () => refreshFavStatus()},
+        {text: '取消', style: 'cancel'},
+      ],
+      {
+        buttonLayout: 'vertical',
+      },
+    );
   };
 
   /** 重新解析"我喜欢"全部歌曲直链，刷新可播放状态：
@@ -377,19 +395,26 @@ export default function MineScreen({navigation, route}: any) {
     if (!recents.length) {
       return;
     }
-    AppAlert.alert('清空最近播放', `确定清空全部 ${recents.length} 条播放记录？`, [
-      {text: '取消', style: 'cancel'},
-      {
-        text: '清空',
-        style: 'destructive',
-        onPress: () => clearRecentSongs(),
-      },
-    ]);
+    AppAlert.alert(
+      '清空最近播放',
+      `确定清空全部 ${recents.length} 条播放记录？`,
+      [
+        {text: '取消', style: 'cancel'},
+        {
+          text: '清空',
+          style: 'destructive',
+          onPress: () => clearRecentSongs(),
+        },
+      ],
+    );
   };
 
   /** 板块卡片图标：皮肤自定义图片优先，未设置时用内置 Icon；
    * 固定高度图标区让自定义图(44)与内置图(30)混搭时三张卡片内容对齐 */
-  const renderCardIcon = (uri: string | undefined, fallback: React.ReactNode) => (
+  const renderCardIcon = (
+    uri: string | undefined,
+    fallback: React.ReactNode,
+  ) => (
     <View style={styles.cardIconBox}>
       {uri ? (
         <Image
@@ -562,7 +587,9 @@ export default function MineScreen({navigation, route}: any) {
                     navigation.navigate('PlaylistDetail', {id: pl.id})
                   }
                   onLongPress={
-                    isFavPl ? () => onLongPressFav() : () => onLongPressPlaylist(pl)
+                    isFavPl
+                      ? () => onLongPressFav()
+                      : () => onLongPressPlaylist(pl)
                   }
                   delayLongPress={400}>
                   <View style={styles.plCover}>

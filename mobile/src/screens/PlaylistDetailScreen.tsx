@@ -56,7 +56,16 @@ type RowProps = {
 };
 
 const SongRow = React.memo(
-  ({item, index, multiMode, checked, styles, onPress, onLongPress, onMore}: RowProps) => (
+  ({
+    item,
+    index,
+    multiMode,
+    checked,
+    styles,
+    onPress,
+    onLongPress,
+    onMore,
+  }: RowProps) => (
     <View style={styles.item}>
       {/* 主点击区与右侧「⋮」拆成兄弟节点，避免点按钮时误触发行点击 */}
       <TouchableOpacity
@@ -77,7 +86,7 @@ const SongRow = React.memo(
             {item.title}
           </Text>
           <View style={styles.subRow}>
-            {!!item.localPath && (
+            {!!(item.localPath || item.uri || item.filePath) && (
               <View style={styles.tag}>
                 <Text style={styles.tagText}>本地</Text>
               </View>
@@ -170,7 +179,9 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
     async (batch: Song[]) => {
       const resolved = await resolveSongUrls(batch);
       const okKeys = new Set(resolved.map(songKey));
-      const bad = batch.filter(s => !s.localPath && !okKeys.has(songKey(s)));
+      const bad = batch.filter(
+        s => !s.localPath && !s.uri && !s.filePath && !okKeys.has(songKey(s)),
+      );
       if (bad.length) {
         const badKeys = new Set(bad.map(songKey));
         markSongsUnplayable(plId, [...badKeys]).catch(() => {});
@@ -209,7 +220,11 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
     setStarting(true);
     try {
       // 渐进式：首批 12 首解析后立即开播，剩余全量占位入队后台替换
-      const ok = await playSongsProgressive(playable, startIdx, resolverWithMark);
+      const ok = await playSongsProgressive(
+        playable,
+        startIdx,
+        resolverWithMark,
+      );
       if (!ok) {
         AppAlert.alert('播放失败', '无法获取歌曲播放地址');
         return;
@@ -239,7 +254,10 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
             // 连同歌词/封面/元数据附件一起删除
             await deleteLocalSongWithCompanions(song.localPath);
           } catch (e) {
-            AppAlert.alert('文件删除失败', '已移出歌单，但文件可能已被移除或无权限');
+            AppAlert.alert(
+              '文件删除失败',
+              '已移出歌单，但文件可能已被移除或无权限',
+            );
           }
         }
         await load();
@@ -261,7 +279,11 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
         onPress: () => doRemove(true),
       });
     }
-    AppAlert.alert(isFavPl ? '取消喜欢' : '移出歌单', `「${song.title}」`, buttons);
+    AppAlert.alert(
+      isFavPl ? '取消喜欢' : '移出歌单',
+      `「${song.title}」`,
+      buttons,
+    );
   };
 
   /** 长按：删除 / 批量操作 */
@@ -291,7 +313,11 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
     AppAlert.alert(
       '排序方式',
       `当前：${
-        sortKey === 'default' ? '默认排序' : sortKey === 'title' ? '按歌名' : '按歌手'
+        sortKey === 'default'
+          ? '默认排序'
+          : sortKey === 'title'
+          ? '按歌名'
+          : '按歌手'
       } · ${sortAsc ? '正序' : '倒序'}`,
       [
         {text: '默认排序', onPress: () => setSortKey('default')},
@@ -308,7 +334,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
 
   /** 逐首交给下载管理器（跳过本地歌曲） */
   const downloadSongs = async (list: Song[]) => {
-    const targets = list.filter(s => !s.localPath);
+    const targets = list.filter(s => !s.localPath && !s.uri && !s.filePath);
     if (!targets.length) {
       AppAlert.alert('无需下载', '所选歌曲均已在本地');
       return;
@@ -418,8 +444,15 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
       const added = await addFavSongs(selectedSongs);
       AppAlert.alert('已添加到"我喜欢"', `新增 ${added} 首`);
     } else {
-      const added = await addSongsToPlaylist(target.id, selectedSongs);
-      AppAlert.alert(`已添加到《${target.name}》`, `新增 ${added} 首`);
+      const result = await addSongsToPlaylist(target.id, selectedSongs);
+      AppAlert.alert(
+        result.limitReached ? '歌单歌曲已达上限' : `已添加到「${target.name}」`,
+        result.limitReached
+          ? `已添加 ${result.added} 首，每个歌单最多 1000 首`
+          : result.added
+          ? '重复歌曲已自动去重'
+          : '歌曲已全部存在，无需重复添加',
+      );
     }
     exitMulti();
   };
@@ -466,7 +499,9 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, !!skin.bg && styles.transparentBg]} edges={['top']}>
+    <SafeAreaView
+      style={[styles.container, !!skin.bg && styles.transparentBg]}
+      edges={['top']}>
       {multiMode ? (
         // 多选模式顶栏：全选 | 已选定N首 | 完成
         <View style={styles.header}>
@@ -564,8 +599,7 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
             style={styles.batchBtn}
             disabled={!selected.size}
             onPress={openBatchAdd}>
-            <Text
-              style={[styles.batchIcon, !selected.size && styles.batchOff]}>
+            <Text style={[styles.batchIcon, !selected.size && styles.batchOff]}>
               ＋
             </Text>
             <Text
@@ -707,7 +741,12 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 12,
       paddingVertical: 8,
     },
-    backText: {fontSize: 30, color: t.text, lineHeight: 32, paddingHorizontal: 4},
+    backText: {
+      fontSize: 30,
+      color: t.text,
+      lineHeight: 32,
+      paddingHorizontal: 4,
+    },
     pageTitle: {flex: 1, fontSize: 18, fontWeight: '700', color: t.text},
     // 多选顶栏
     selectAll: {flexDirection: 'row', alignItems: 'center', gap: 8},
