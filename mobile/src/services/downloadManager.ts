@@ -8,6 +8,7 @@ import {
   downloadCompanions,
   deleteLocalSongWithCompanions,
   isTreeUri,
+  localSongFileExists,
 } from './download';
 import {
   Quality,
@@ -486,7 +487,10 @@ export async function removeDownloadRecord(
 ) {
   if (deleteFile && task.path && canDeleteTaskFile(task.path)) {
     // 连同歌词/封面/元数据附件一起删除
-    await deleteLocalSongWithCompanions(task.path);
+    // 本地音乐页可能已经删除了主文件；此时删除下载记录仍应成功。
+    if (await localSongFileExists(task.path)) {
+      await deleteLocalSongWithCompanions(task.path);
+    }
   }
   history = history.filter(
     x => !(x.id === task.id && x.createdAt === task.createdAt),

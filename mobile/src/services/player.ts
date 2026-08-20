@@ -17,6 +17,16 @@ import type {Song} from '../types/music';
 
 export type PlayMode = 'list' | 'single' | 'shuffle';
 
+function shuffledWithFirst<T>(items: T[]): T[] {
+  if (items.length < 2) return items;
+  const [first, ...rest] = items;
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return [first, ...rest];
+}
+
 /** 是否为需要联网的在线曲目（有 mid 待解析或直链为 http，且非本地文件） */
 function isOnlineSong(s?: Song): boolean {
   if (!s || s.localPath || s.uri || s.filePath) {
@@ -54,6 +64,11 @@ const modeLoaded = AsyncStorage.getItem(K_PLAY_MODE)
 
 /** 当前全局播放模式（同步读） */
 export function getPlayMode(): PlayMode {
+  return currentMode;
+}
+
+export async function getPlayModeAsync(): Promise<PlayMode> {
+  await modeLoaded;
   return currentMode;
 }
 
@@ -374,15 +389,19 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   if (!tracks.length) {
     return;
   }
-  await TrackPlayer.reset();
-  await TrackPlayer.add(tracks);
-  // v4: skip 按队列下标
   const startTrackId = songToTrack(startSong).id;
   const idx = Math.max(
     tracks.findIndex(t => t.id === startTrackId),
     0,
   );
-  if (idx > 0) {
+  const orderedTracks =
+    currentMode === 'shuffle'
+      ? shuffledWithFirst([...tracks.slice(idx), ...tracks.slice(0, idx)])
+      : tracks;
+  await TrackPlayer.reset();
+  await TrackPlayer.add(orderedTracks);
+  // v4: skip 按队列下标；随机模式已将起播曲目放在队首
+  if (currentMode !== 'shuffle' && idx > 0) {
     await TrackPlayer.skip(idx);
   }
   await TrackPlayer.play();
@@ -527,7 +546,8 @@ export async function playSongsProgressive(
     ),
     queueSongs.length - 1,
   );
-  const ordered = [...queueSongs.slice(idx), ...queueSongs.slice(0, idx)];
+  const rotated = [...queueSongs.slice(idx), ...queueSongs.slice(0, idx)];
+  const ordered = currentMode === 'shuffle' ? shuffledWithFirst(rotated) : rotated;
 
   // 首批：解析直链后立即开播
   const firstCount = localStart ? 1 : FIRST;
@@ -738,6 +758,36 @@ export async function setPlayMode(mode: PlayMode) {
     await TrackPlayer.setRepeatMode(RepeatMode.Track);
   } else {
     await TrackPlayer.setRepeatMode(RepeatMode.Queue);
+    if (mode === 'shuffle') {
+      // RNTP 的 Queue repeat 仍按队列顺序前进，进入随机模式时先将队列
+      // 洗牌并保留当前曲目在当前位置，使自动连播与手动下一曲一致。
+      try {
+        const queue = await TrackPlayer.getQueue();
+        const current = (await TrackPlayer.getActiveTrackIndex()) ?? 0;
+        if (queue.length > 1) {
+          const currentTrack = queue[current];
+          const rest = queue.filter((_, i) => i !== current);
+          for (let i = rest.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rest[i], rest[j]] = [rest[j], rest[i]];
+          }
+          const playback = await TrackPlayer.getPlaybackState();
+          const progress = await TrackPlayer.getProgress();
+          await TrackPlayer.reset();
+          await TrackPlayer.add([currentTrack, ...rest]);
+          if (progress.position > 0) {
+            await TrackPlayer.seekTo(progress.position);
+          }
+          if (playback.state === State.Playing) {
+            await TrackPlayer.play();
+          }
+          notifyQueueSnapshot();
+          saveQueueSnapshot().catch(() => {});
+        }
+      } catch (e) {
+        // 队列尚未建立时忽略，后续建队会按当前模式洗牌。
+      }
+    }
   }
 }
 
@@ -746,17 +796,11 @@ export async function skipToNext(mode?: PlayMode) {
   const m = mode ?? currentMode;
   try {
     if (m === 'shuffle') {
-      const queue = await TrackPlayer.getQueue();
-      if (queue.length > 1) {
-        const current = (await TrackPlayer.getActiveTrackIndex()) ?? 0;
-        let next = current;
-        while (next === current) {
-          next = Math.floor(Math.random() * queue.length);
-        }
-        await TrackPlayer.skip(next);
-        await TrackPlayer.play();
-        return;
-      }
+      // 随机模式的队列在建队/切换模式时已经洗牌，顺序前进才能让
+      // 手动下一曲和自然播放结束后的下一曲保持一致。
+      await TrackPlayer.skipToNext();
+      await TrackPlayer.play();
+      return;
     }
     await TrackPlayer.skipToNext();
     await TrackPlayer.play();

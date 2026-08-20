@@ -526,6 +526,16 @@ export default function PlaylistDetailScreen({navigation, route}: any) {
           <Text style={styles.pageTitle} numberOfLines={1}>
             {pl?.name ?? '歌单'}
           </Text>
+          <TouchableOpacity
+            style={styles.searchBtn}
+            onPress={() => navigation.navigate('Search', {
+              playlistId: plId,
+              playlistName: pl?.name ?? '歌单',
+              ts: Date.now(),
+            })}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            <Icon name="search" size={20} color={t.text} />
+          </TouchableOpacity>
         </View>
       )}
 
@@ -748,6 +758,7 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: 4,
     },
     pageTitle: {flex: 1, fontSize: 18, fontWeight: '700', color: t.text},
+    searchBtn: {paddingHorizontal: 8, paddingVertical: 6},
     // 多选顶栏
     selectAll: {flexDirection: 'row', alignItems: 'center', gap: 8},
     selectAllText: {fontSize: 14, color: t.text},

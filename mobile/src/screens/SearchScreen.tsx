@@ -38,6 +38,8 @@ import {
   getLocalPlaylists,
   songKey,
   LocalPlaylist,
+  getFavSongs,
+  getLocalPlaylist,
 } from '../services/store';
 import SongActionSheet from '../components/SongActionSheet';
 import {startDownload} from '../services/downloadManager';
@@ -55,6 +57,9 @@ export default function SearchScreen({navigation, route}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const fromHomeSearch = !!route?.params?.fromHomeSearch;
+  const playlistScope = !!route?.params?.playlistId;
+  const playlistId = route?.params?.playlistId as string | undefined;
+  const playlistName = route?.params?.playlistName ?? '歌单';
   // 首页搜索框先在上一页完成上移动画；本页只让其下方内容向下展开。
   const bodyEntry = useRef(new Animated.Value(fromHomeSearch ? 0 : 1)).current;
   const bodyTranslateY = bodyEntry.interpolate({
@@ -70,6 +75,7 @@ export default function SearchScreen({navigation, route}: any) {
     route?.params?.tab === 'playlist' ? 'playlist' : 'song',
   );
   const [results, setResults] = useState<Song[]>([]);
+  const [playlistSongs, setPlaylistSongs] = useState<Song[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
   // 搜索歌曲支持长按进入多选，批量添加到其他歌单
@@ -90,6 +96,24 @@ export default function SearchScreen({navigation, route}: any) {
   const [history, setHistory] = useState<string[]>([]);
   // 已收藏歌单 id 集合（收藏/取消实时刷新）
   const favIds = useFavPlaylistIds();
+
+  useEffect(() => {
+    if (!playlistScope || !playlistId) return;
+    let alive = true;
+    (async () => {
+      const list = playlistId === '__fav__'
+        ? await getFavSongs()
+        : (await getLocalPlaylist(playlistId))?.songs ?? [];
+      if (!alive) return;
+      setTab('song');
+      setPlaylistSongs(list);
+      setResults(list);
+      setQuery('');
+    })().catch(() => {
+      if (alive) AppAlert.alert('读取歌单失败', '请稍后重试');
+    });
+    return () => { alive = false; };
+  }, [playlistScope, playlistId, route?.params?.ts]);
 
   useEffect(() => {
     if (!fromHomeSearch) {
@@ -151,6 +175,16 @@ export default function SearchScreen({navigation, route}: any) {
 
   const doSearch = async (kw: string) => {
     if (!kw) {
+      if (playlistScope) {
+        setResults(playlistSongs);
+        setQuery('');
+      }
+      return;
+    }
+    if (playlistScope) {
+      const q = kw.toLocaleLowerCase();
+      setResults(playlistSongs.filter(s => `${s.title} ${s.singer?.map(x => x.name).join(' ') ?? ''} ${s.album?.name ?? ''}`.toLocaleLowerCase().includes(q)));
+      setQuery(kw);
       return;
     }
     await waitForNetworkState();
@@ -495,9 +529,7 @@ export default function SearchScreen({navigation, route}: any) {
           </TouchableOpacity>
           <TextInput
             style={styles.input}
-            placeholder={
-              tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'
-            }
+            placeholder={playlistScope ? `搜索${playlistName}中的歌曲` : tab === 'playlist' ? '搜索歌单' : '搜索歌曲、歌手、专辑'}
             placeholderTextColor={t.sub}
             value={keyword}
             onChangeText={setKeyword}
@@ -516,7 +548,7 @@ export default function SearchScreen({navigation, route}: any) {
             {opacity: bodyEntry, transform: [{translateY: bodyTranslateY}]},
           ]}>
           {/* 结果分类 tab（文字+下划线风格）：歌曲 / 歌单，仅在发起搜索后显示 */}
-          {!!query && (
+          {!!query && !playlistScope && (
             <View style={styles.typeTabs}>
               <TouchableOpacity
                 style={styles.typeTab}
@@ -599,7 +631,7 @@ export default function SearchScreen({navigation, route}: any) {
             </View>
           )}
           {/* 未发起搜索时展示历史记录 */}
-          {!loading && !query && history.length > 0 && (
+          {!playlistScope && !loading && !query && history.length > 0 && (
             <View style={styles.historyWrap}>
               <View style={styles.historyHeader}>
                 <Text style={styles.historyTitle}>搜索历史</Text>

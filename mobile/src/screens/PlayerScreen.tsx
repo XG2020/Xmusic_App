@@ -48,6 +48,7 @@ import {
 import {
   PlayMode,
   getPlayMode,
+  getPlayModeAsync,
   seekTo,
   setPlayMode,
   skipToNextUser,
@@ -285,6 +286,9 @@ export default function PlayerScreen({navigation}: any) {
   const track = nativeTrack ?? pendingTrack;
   // 播放模式取全局持久化状态，切换播放列表/重进播放页不重置
   const [mode, setMode] = useState<PlayMode>(getPlayMode());
+  useEffect(() => {
+    getPlayModeAsync().then(setMode).catch(() => {});
+  }, []);
   const [fav, setFav] = useState(false);
   // 睡眠定时器
   const sleepRemain = useSleepTimer();

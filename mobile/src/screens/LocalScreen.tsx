@@ -26,6 +26,13 @@ import {
 } from '../services/settings';
 import {playSongs} from '../services/player';
 import {deleteLocalSongWithCompanions} from '../services/download';
+import {
+  addFavSongs,
+  addSongsToPlaylist,
+  getLocalPlaylists,
+  songKey,
+  LocalPlaylist,
+} from '../services/store';
 import SongActionSheet from '../components/SongActionSheet';
 import Icon from '../components/Icon';
 import {formatDuration} from '../utils/format';
@@ -69,11 +76,15 @@ type LocalRowProps = {
   styles: ReturnType<typeof createStyles>;
   onPress: (index: number) => void;
   onMore: (item: Song) => void;
+  onLongPress: (item: Song) => void;
+  multiMode: boolean;
+  checked: boolean;
 };
 
 const LocalSongRow = React.memo(
-  ({item, index, styles, onPress, onMore}: LocalRowProps) => (
-    <TouchableOpacity style={styles.item} onPress={() => onPress(index)}>
+  ({item, index, styles, onPress, onMore, onLongPress, multiMode, checked}: LocalRowProps) => (
+    <TouchableOpacity style={styles.item} onPress={() => onPress(index)} onLongPress={multiMode ? undefined : () => onLongPress(item)} delayLongPress={400}>
+      {multiMode && <View style={[styles.checkbox, checked && styles.checkboxOn]}>{checked && <Text style={styles.checkboxTick}>✓</Text>}</View>}
       <View style={styles.itemInfo}>
         <Text style={styles.title} numberOfLines={1}>
           {item.title}
@@ -85,12 +96,12 @@ const LocalSongRow = React.memo(
       <Text style={styles.duration}>
         {item.interval ? formatDuration(item.interval) : ''}
       </Text>
-      <TouchableOpacity
+      {!multiMode && <TouchableOpacity
         style={styles.moreBtn}
         onPress={() => onMore(item)}
         hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
         <Icon name="more" size={16} style={styles.moreIcon} />
-      </TouchableOpacity>
+      </TouchableOpacity>}
     </TouchableOpacity>
   ),
 );
@@ -102,6 +113,8 @@ export default function LocalScreen({navigation}: any) {
   const [songs, setSongs] = useState<Song[]>([]);
   const [scanning, setScanning] = useState(false);
   const [actionSong, setActionSong] = useState<Song | null>(null);
+  const [multiMode, setMultiMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   // 自定义扫描文件夹管理
   const [folderModal, setFolderModal] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
@@ -143,6 +156,47 @@ export default function LocalScreen({navigation}: any) {
   playAtRef.current = playAt;
   const onRowPress = useCallback((index: number) => playAtRef.current(index), []);
   const onRowMore = useCallback((item: Song) => setActionSong(item), []);
+  const enterMulti = (song?: Song) => {
+    setSelectedKeys(song ? new Set([songKey(song)]) : new Set());
+    setMultiMode(true);
+  };
+  const exitMulti = () => { setMultiMode(false); setSelectedKeys(new Set()); };
+  const toggleSelected = (song: Song) => setSelectedKeys(prev => {
+    const next = new Set(prev); const key = songKey(song);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const selectedSongs = songs.filter(s => selectedKeys.has(songKey(s)));
+  const batchAdd = async () => {
+    if (!selectedSongs.length) return;
+    let pls: LocalPlaylist[] = [];
+    try { pls = await getLocalPlaylists(); } catch (e) { AppAlert.alert('读取歌单失败', '请稍后重试'); return; }
+    AppAlert.alert('批量添加到歌单', '选择目标歌单', [
+      {text: `我喜欢（${selectedSongs.length} 首）`, onPress: async () => {
+        const n = await addFavSongs(selectedSongs); AppAlert.alert('添加完成', n ? `新增 ${n} 首` : '歌曲均已存在'); exitMulti();
+      }},
+      ...pls.map(pl => ({text: `${pl.name}（${pl.songs.length} 首）`, onPress: async () => {
+        const r = await addSongsToPlaylist(pl.id, selectedSongs); AppAlert.alert('添加完成', r.limitReached ? `已添加 ${r.added} 首，歌单已达上限` : `新增 ${r.added} 首`); exitMulti();
+      }})),
+      {text: '取消', style: 'cancel' as const},
+    ]);
+  };
+  const batchDelete = () => {
+    if (!selectedSongs.length) return;
+    AppAlert.alert('删除本地歌曲', `确定删除选中的 ${selectedSongs.length} 首歌曲文件？`, [
+      {text: '取消', style: 'cancel'},
+      {text: '删除', style: 'destructive', onPress: async () => {
+        const removed = new Set<string>();
+        let skipped = 0;
+        for (const song of selectedSongs) {
+          if (!song.localPath || song.localPath.startsWith('content://') && !song.localPath.includes('/document/')) continue;
+          try { if (song.localPath) { await deleteLocalSongWithCompanions(song.localPath); removed.add(songKey(song)); } } catch (e) { skipped++; }
+        }
+        setSongs(prev => prev.filter(s => !removed.has(songKey(s)))); exitMulti();
+        if (skipped || removed.size < selectedSongs.length) AppAlert.alert('部分歌曲未删除', '系统媒体库歌曲或无权限文件请在文件管理器中删除');
+      }},
+    ]);
+  };
 
   /** 长按删除本地文件 */
   const onDeleteSong = (song: Song) => {
@@ -256,7 +310,15 @@ export default function LocalScreen({navigation}: any) {
         </TouchableOpacity>
       </View>
 
-      {songs.length > 0 && (
+      {multiMode && <View style={styles.batchBar}>
+        <TouchableOpacity onPress={() => setSelectedKeys(selectedKeys.size === songs.length ? new Set() : new Set(songs.map(songKey)))}><Text style={styles.batchAction}>全选</Text></TouchableOpacity>
+        <Text style={styles.batchCount}>已选 {selectedKeys.size} 首</Text>
+        <TouchableOpacity disabled={!selectedKeys.size} onPress={batchAdd}><Text style={[styles.batchAction, !selectedKeys.size && styles.batchDisabled]}>添加到歌单</Text></TouchableOpacity>
+        <TouchableOpacity disabled={!selectedKeys.size} onPress={batchDelete}><Text style={[styles.batchAction, !selectedKeys.size && styles.batchDisabled]}>删除文件</Text></TouchableOpacity>
+        <TouchableOpacity onPress={exitMulti}><Text style={styles.batchAction}>完成</Text></TouchableOpacity>
+      </View>}
+
+      {!multiMode && songs.length > 0 && (
         <TouchableOpacity style={styles.playAll} onPress={() => playAt(0)}>
           <Text style={styles.playAllIcon}>▶</Text>
           <Text style={styles.playAllText}>播放全部 ({songs.length})</Text>
@@ -291,8 +353,11 @@ export default function LocalScreen({navigation}: any) {
               item={item}
               index={index}
               styles={styles}
-              onPress={onRowPress}
+              onPress={(index) => multiMode ? toggleSelected(item) : onRowPress(index)}
               onMore={onRowMore}
+              onLongPress={enterMulti}
+              multiMode={multiMode}
+              checked={selectedKeys.has(songKey(item))}
             />
           )}
         />
@@ -463,6 +528,13 @@ const createStyles = (t: Theme) =>
     },
     playAllIcon: {color: t.primary, fontSize: 14},
     playAllText: {fontSize: 14, fontWeight: '700', color: t.text},
+    batchBar: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: t.panel ?? t.card},
+    batchAction: {color: t.primary, fontSize: 13, fontWeight: '700'},
+    batchCount: {flex: 1, color: t.sub, fontSize: 12},
+    batchDisabled: {opacity: 0.45},
+    checkbox: {width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: t.sub, alignItems: 'center', justifyContent: 'center', marginRight: 10},
+    checkboxOn: {backgroundColor: t.primary, borderColor: t.primary},
+    checkboxTick: {color: '#fff', fontSize: 12, fontWeight: '700'},
     scanningWrap: {alignItems: 'center', marginTop: 60, gap: 12},
     scanningText: {color: t.sub, fontSize: 13},
     empty: {

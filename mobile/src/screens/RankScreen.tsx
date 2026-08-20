@@ -25,6 +25,8 @@ import Icon from '../components/Icon';
 import {useSkin} from '../services/skin';
 import {useTheme, Theme} from '../theme';
 import type {Song} from '../types/music';
+import {addFavSongs, addSongsToPlaylist, getLocalPlaylists, songKey, LocalPlaylist} from '../services/store';
+import {startDownload} from '../services/downloadManager';
 
 // 兜底榜单（接口失败时使用）
 const FALLBACK_RANKS: RankInfo[] = [
@@ -73,6 +75,8 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   const [actionSong, setActionSong] = useState<Song | null>(null);
   // 榜单分类：收起时横滑胶囊，展开时显示完整网格
   const [chipsExpanded, setChipsExpanded] = useState(false);
+  const [multiMode, setMultiMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     getTopGroups()
@@ -107,6 +111,8 @@ export default function RankScreen({navigation, route, lockPager}: any) {
   }, [rankId, load]);
 
   const pickRank = (nextRankId: number) => {
+    setMultiMode(false);
+    setSelectedKeys(new Set());
     setChipsExpanded(false);
     if (nextRankId === rankId) {
       return;
@@ -150,12 +156,44 @@ export default function RankScreen({navigation, route, lockPager}: any) {
     }
     setActionSong(s);
   };
+  const enterMulti = (song?: Song) => { setSelectedKeys(song ? new Set([songKey(song)]) : new Set()); setMultiMode(true); };
+  const exitMulti = () => { setMultiMode(false); setSelectedKeys(new Set()); };
+  const toggleSelected = (song: Song) => setSelectedKeys(prev => { const n = new Set(prev); const k = songKey(song); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const selectedSongs = songs.filter(s => selectedKeys.has(songKey(s)));
+  const resolveSelected = async () => {
+    const resolved = await Promise.all(selectedSongs.map(async s => {
+      if (s.mid || !s.id) return s;
+      const full = await resolveSongById(s.id);
+      return full ? {...s, ...full, coverUrl: s.coverUrl ?? full.coverUrl} : s;
+    }));
+    return resolved;
+  };
+  const batchAdd = async () => {
+    const targets = await resolveSelected();
+    let pls: LocalPlaylist[] = []; try { pls = await getLocalPlaylists(); } catch (e) { AppAlert.alert('读取歌单失败', '请稍后重试'); return; }
+    AppAlert.alert('批量添加到歌单', '选择目标歌单', [
+      {text: `我喜欢（${targets.length} 首）`, onPress: async () => { const n = await addFavSongs(targets); AppAlert.alert('添加完成', n ? `新增 ${n} 首` : '歌曲均已存在'); exitMulti(); }},
+      ...pls.map(pl => ({text: `${pl.name}（${pl.songs.length} 首）`, onPress: async () => { const r = await addSongsToPlaylist(pl.id, targets); AppAlert.alert('添加完成', r.limitReached ? `已添加 ${r.added} 首，歌单已达上限` : `新增 ${r.added} 首`); exitMulti(); }})),
+      {text: '取消', style: 'cancel' as const},
+    ]);
+  };
+  const batchDownload = async () => {
+    const targets = await resolveSelected(); exitMulti(); let n = 0;
+    for (const s of targets) { try { if (await startDownload(s)) n++; } catch (e) {} }
+    AppAlert.alert(n ? '已加入下载队列' : '无法下载', n ? `共 ${n} 首` : '没有可用播放地址');
+  };
 
   return (
     <SafeAreaView
       style={[styles.container, !!skin.bg && styles.transparentBg]}
       edges={['top']}>
-      <View style={styles.titleRow}>
+      {multiMode ? <View style={styles.batchBar}>
+        <TouchableOpacity onPress={() => setSelectedKeys(selectedKeys.size === songs.length ? new Set() : new Set(songs.map(songKey)))}><Text style={styles.batchAction}>全选</Text></TouchableOpacity>
+        <Text style={styles.batchCount}>已选 {selectedKeys.size} 首</Text>
+        <TouchableOpacity disabled={!selectedKeys.size} onPress={batchAdd}><Text style={[styles.batchAction, !selectedKeys.size && styles.batchDisabled]}>添加到歌单</Text></TouchableOpacity>
+        <TouchableOpacity disabled={!selectedKeys.size} onPress={batchDownload}><Text style={[styles.batchAction, !selectedKeys.size && styles.batchDisabled]}>下载</Text></TouchableOpacity>
+        <TouchableOpacity onPress={exitMulti}><Text style={styles.batchAction}>完成</Text></TouchableOpacity>
+      </View> : <View style={styles.titleRow}>
         {standalone && (
           <TouchableOpacity
             onPress={() => navigation.goBack()}
@@ -164,7 +202,7 @@ export default function RankScreen({navigation, route, lockPager}: any) {
           </TouchableOpacity>
         )}
         <Text style={styles.pageTitle}>排行榜</Text>
-      </View>
+      </View>}
       {/* 分类栏：对齐歌单页逻辑，横滑胶囊 + 右侧展开按钮 */}
       <View style={styles.chipsBar}>
         <ScrollView
@@ -225,7 +263,7 @@ export default function RankScreen({navigation, route, lockPager}: any) {
       ) : (
         <>
           {/* 播放全部 */}
-          {!loading && songs.length > 0 && (
+          {!multiMode && !loading && songs.length > 0 && (
             <TouchableOpacity style={styles.playAllRow} onPress={playAll}>
               <Icon name="play" size={18} color={t.primary} />
               <Text style={styles.playAllText}>播放全部</Text>
@@ -259,7 +297,10 @@ export default function RankScreen({navigation, route, lockPager}: any) {
                   <TouchableOpacity
                     style={styles.itemMain}
                     activeOpacity={0.7}
-                    onPress={() => playAt(index)}>
+                    onPress={() => (multiMode ? toggleSelected(item) : playAt(index))}
+                    onLongPress={multiMode ? undefined : () => enterMulti(item)}
+                    delayLongPress={400}>
+                    {multiMode && <View style={[styles.checkbox, selectedKeys.has(songKey(item)) && styles.checkboxOn]}>{selectedKeys.has(songKey(item)) && <Text style={styles.checkboxTick}>✓</Text>}</View>}
                     <Text style={[styles.rankNo, index < 3 && styles.rankNoTop]}>
                       {index + 1}
                     </Text>
@@ -283,12 +324,12 @@ export default function RankScreen({navigation, route, lockPager}: any) {
                       </Text>
                     </View>
                   </TouchableOpacity>
-                  <TouchableOpacity
+                  {!multiMode && <TouchableOpacity
                     style={styles.moreBtn}
                     onPress={() => openActions(item)}
                     hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
                     <Icon name="more" size={16} style={styles.moreIcon} />
-                  </TouchableOpacity>
+                  </TouchableOpacity>}
                 </View>
               )}
             />
@@ -376,6 +417,13 @@ const createStyles = (t: Theme) =>
     },
     playAllText: {fontSize: 15, fontWeight: '700', color: t.text},
     playAllCount: {fontSize: 12, color: t.sub},
+    batchBar: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: t.panel ?? t.card},
+    batchAction: {color: t.primary, fontSize: 13, fontWeight: '700'},
+    batchCount: {flex: 1, color: t.sub, fontSize: 12},
+    batchDisabled: {opacity: 0.45},
+    checkbox: {width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: t.sub, alignItems: 'center', justifyContent: 'center', marginRight: 8},
+    checkboxOn: {backgroundColor: t.primary, borderColor: t.primary},
+    checkboxTick: {color: '#fff', fontSize: 12, fontWeight: '700'},
     empty: {textAlign: 'center', color: t.sub, marginTop: 60, fontSize: 13},
     item: {
       flexDirection: 'row',

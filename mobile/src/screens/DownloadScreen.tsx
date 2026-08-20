@@ -1,4 +1,4 @@
-import React, {useMemo} from 'react';
+import React, {useMemo, useState} from 'react';
 import {
   View,
   Text,
@@ -94,11 +94,38 @@ export default function DownloadScreen({navigation}: any) {
   const styles = useMemo(() => createStyles(t), [t]);
   const skin = useSkin();
   const {active, history} = useDownloads();
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const taskKey = (item: DownloadTask) => `${item.id}-${item.createdAt}`;
 
   const sections = [
     ...(active.length ? [{title: `下载中 (${active.length})`, data: active}] : []),
     ...(history.length ? [{title: '下载历史', data: history}] : []),
   ];
+  const allTasks = [...active, ...history];
+  const selectedTasks = allTasks.filter(item => selected.has(taskKey(item)));
+  const exitMulti = () => { setMultiMode(false); setSelected(new Set()); };
+  const enterMulti = (item: DownloadTask) => { setSelected(new Set([taskKey(item)])); setMultiMode(true); };
+  const toggleSelected = (item: DownloadTask) => setSelected(prev => { const n = new Set(prev); const k = taskKey(item); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const batchPause = async () => {
+    for (const item of selectedTasks) if (item.status === 'downloading' || item.status === 'queued') await pauseDownload(item.id);
+    exitMulti();
+  };
+  const batchCancel = () => AppAlert.alert('取消下载任务', `确定取消选中的 ${selectedTasks.length} 条任务？`, [
+    {text: '取消', style: 'cancel'},
+    {text: '确定', style: 'destructive', onPress: async () => { for (const item of selectedTasks) if (item.status === 'downloading' || item.status === 'queued' || item.status === 'paused') await cancelDownload(item.id); exitMulti(); }},
+  ]);
+  const batchRemove = (deleteFile: boolean) => AppAlert.alert(deleteFile ? '删除记录和文件' : '删除下载记录', `确定处理选中的 ${selectedTasks.length} 条历史记录？`, [
+    {text: '取消', style: 'cancel'},
+    {text: '删除', style: 'destructive', onPress: async () => {
+      let failed = 0;
+      for (const item of selectedTasks) {
+        if (item.status === 'downloading' || item.status === 'queued' || item.status === 'paused') continue;
+        try { await removeDownloadRecord(item, deleteFile && item.status === 'done'); } catch (e) { failed++; }
+      }
+      exitMulti(); if (failed) AppAlert.alert('部分删除失败', `${failed} 条记录对应文件没有删除权限`);
+    }},
+  ]);
 
   const onClear = () => {
     if (!history.length) {
@@ -240,8 +267,10 @@ export default function DownloadScreen({navigation}: any) {
       <TouchableOpacity
         style={styles.item}
         activeOpacity={0.7}
-        onLongPress={() => onLongPressItem(item)}
+        onPress={() => multiMode ? toggleSelected(item) : onLongPressItem(item)}
+        onLongPress={multiMode ? undefined : () => enterMulti(item)}
         delayLongPress={400}>
+        {multiMode && <View style={[styles.checkbox, selected.has(taskKey(item)) && styles.checkboxOn]}>{selected.has(taskKey(item)) && <Text style={styles.checkboxTick}>✓</Text>}</View>}
         <View style={styles.itemInfo}>
           <Text style={styles.title} numberOfLines={1}>
             {item.title}
@@ -274,7 +303,7 @@ export default function DownloadScreen({navigation}: any) {
             </Text>
           )}
         </View>
-        {item.status === 'downloading' || item.status === 'queued' ? (
+        {!multiMode && (item.status === 'downloading' || item.status === 'queued' ? (
           // 下载中/排队中：点击暂停
           <TouchableOpacity
             style={styles.statusBtn}
@@ -304,7 +333,7 @@ export default function DownloadScreen({navigation}: any) {
               color={item.status === 'done' ? t.primary : '#E5484D'}
             />
           </View>
-        )}
+        ))}
       </TouchableOpacity>
     );
   };
@@ -322,6 +351,20 @@ export default function DownloadScreen({navigation}: any) {
           <Text style={styles.clearText}>清空历史</Text>
         </TouchableOpacity>
       </View>
+
+      {multiMode && <>
+        <View style={styles.batchBar}>
+          <TouchableOpacity onPress={() => setSelected(selected.size === allTasks.length ? new Set() : new Set(allTasks.map(taskKey)))}><Text style={styles.batchAction}>全选</Text></TouchableOpacity>
+          <Text style={styles.batchCount}>已选 {selected.size} 条</Text>
+          <TouchableOpacity onPress={exitMulti}><Text style={styles.batchAction}>完成</Text></TouchableOpacity>
+        </View>
+        <View style={styles.batchActions}>
+          <TouchableOpacity style={styles.batchBtn} disabled={!selectedTasks.some(x => x.status === 'downloading' || x.status === 'queued')} onPress={batchPause}><Text style={styles.batchAction}>暂停</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.batchBtn} disabled={!selectedTasks.some(x => x.status === 'downloading' || x.status === 'queued' || x.status === 'paused')} onPress={batchCancel}><Text style={styles.batchAction}>取消任务</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.batchBtn} disabled={!selectedTasks.some(x => x.status === 'done' || x.status === 'error')} onPress={() => batchRemove(false)}><Text style={styles.batchAction}>删除记录</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.batchBtn} disabled={!selectedTasks.some(x => x.status === 'done')} onPress={() => batchRemove(true)}><Text style={styles.batchAction}>删除文件</Text></TouchableOpacity>
+        </View>
+      </>}
 
       <SectionList
         showsVerticalScrollIndicator={false}
@@ -384,6 +427,14 @@ const createStyles = (t: Theme) =>
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderColor: t.border,
     },
+    batchBar: {flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: t.panel ?? t.card},
+    batchAction: {color: t.primary, fontSize: 12, fontWeight: '700'},
+    batchCount: {flex: 1, color: t.sub, fontSize: 12},
+    batchActions: {flexDirection: 'row', paddingHorizontal: 8, paddingBottom: 8, backgroundColor: t.panel ?? t.card},
+    batchBtn: {flex: 1, alignItems: 'center', paddingVertical: 5},
+    checkbox: {width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: t.sub, alignItems: 'center', justifyContent: 'center', marginRight: 8},
+    checkboxOn: {backgroundColor: t.primary, borderColor: t.primary},
+    checkboxTick: {color: '#fff', fontSize: 12, fontWeight: '700'},
     itemInfo: {flex: 1},
     title: {fontSize: 15, fontWeight: '600', color: t.text},
     sub: {fontSize: 11, color: t.sub, marginTop: 3},
