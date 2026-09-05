@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   View,
   Text,
@@ -127,9 +127,9 @@ function MainTabs({navigation, route}: any) {
   };
 
   /** 排行榜横向榜单列表触摸时锁住 pager，避免被页面切换手势拦截 */
-  const lockPager = (locked: boolean) => {
+  const lockPager = useCallback((locked: boolean) => {
     pagerRef.current?.setNativeProps({scrollEnabled: !locked});
-  };
+  }, []);
 
   // 外部 navigate('Main', {tab, ...}) 时滑到对应页
   const params = route?.params ?? {};
@@ -198,7 +198,11 @@ function MainTabs({navigation, route}: any) {
           <HomeScreen navigation={navigation} topPad={headerH} />
         </View>
         <View style={{width}}>
-          <PlaylistTabPage navigation={navigation} topPad={headerH} />
+          <PlaylistTabPage
+            navigation={navigation}
+            topPad={headerH}
+            lockPager={lockPager}
+          />
         </View>
         {showRank && (
           <View style={{width}}>

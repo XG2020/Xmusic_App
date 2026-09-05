@@ -1,7 +1,12 @@
 import {NativeModules, Platform} from 'react-native';
 import RNFS from 'react-native-fs';
 import {getDefaultDownloadDir, getDownloadDir, getScanFolders} from './settings';
-import {enrichLocalSong, QUALITY_TAG_RE, isTreeUri} from './download';
+import {
+  enrichLocalSong,
+  QUALITY_TAG_RE,
+  isTreeUri,
+  localSongFileExists,
+} from './download';
 import type {Song} from '../types/music';
 
 const {LocalMusic} = NativeModules;
@@ -180,11 +185,23 @@ export async function scanLocalSongs(): Promise<Song[]> {
     ...customDirs.map(dir => scanDir(dir, 4)),
   ]);
 
+  // MediaStore 可能暂时保留已经被文件管理器删除的条目。先校验实际文件，
+  // 避免失效的 content:// 记录重新出现在本地音乐列表。
+  const validMediaSongs = (
+    await Promise.all(
+      mediaSongs.map(async song =>
+        song.localPath && (await localSongFileExists(song.localPath))
+          ? song
+          : null,
+      ),
+    )
+  ).filter((song): song is Song => !!song);
+
   const byPath = new Map<string, Song>();
   // MediaStore 条目以 content:// URI 为 key；目录扫描以文件路径为 key，
   // 两者对同一物理文件不重合，需用 filePath 关联去重，否则列表重复
   const mediaFilePaths = new Set<string>();
-  for (const s of mediaSongs) {
+  for (const s of validMediaSongs) {
     if (s.localPath) {
       byPath.set(s.localPath, s);
     }

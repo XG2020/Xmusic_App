@@ -1,4 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {useFocusEffect} from '@react-navigation/native';
 import {
   View,
   Text,
@@ -25,7 +26,10 @@ import {
   autoOpenPlayerEnabled,
 } from '../services/settings';
 import {playSongs} from '../services/player';
-import {deleteLocalSongWithCompanions} from '../services/download';
+import {
+  deleteLocalSongWithCompanions,
+  localSongFileExists,
+} from '../services/download';
 import {
   addFavSongs,
   addSongsToPlaylist,
@@ -123,13 +127,13 @@ export default function LocalScreen({navigation}: any) {
   const [browseDirs, setBrowseDirs] = useState<DirEntry[]>([]);
   const [browsing, setBrowsing] = useState(false);
 
-  const scan = useCallback(async () => {
+  const scan = useCallback(async (showEmptyAlert = false) => {
     setScanning(true);
     try {
       await ensurePermission();
       const list = await scanLocalSongs();
       setSongs(list);
-      if (!list.length) {
+      if (showEmptyAlert && !list.length) {
         AppAlert.alert('扫描完成', '未找到本地音乐文件');
       }
     } catch (e) {
@@ -139,10 +143,16 @@ export default function LocalScreen({navigation}: any) {
     }
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      // 每次回到本页都重新校验 MediaStore，清除被文件管理器外部删除的歌曲。
+      scan(false);
+    }, [scan]),
+  );
+
   useEffect(() => {
-    scan();
     getScanFolders().then(setFolders);
-  }, [scan]);
+  }, []);
 
   const playAt = (index: number) => {
     playSongs(songs, index);
@@ -189,8 +199,24 @@ export default function LocalScreen({navigation}: any) {
         const removed = new Set<string>();
         let skipped = 0;
         for (const song of selectedSongs) {
-          if (!song.localPath || song.localPath.startsWith('content://') && !song.localPath.includes('/document/')) continue;
-          try { if (song.localPath) { await deleteLocalSongWithCompanions(song.localPath); removed.add(songKey(song)); } } catch (e) { skipped++; }
+          const path = song.localPath;
+          if (!path) {
+            continue;
+          }
+          try {
+            // 文件已被外部删除时也从 App 列表移除，不再把 ENOENT 当成失败。
+            if (!(await localSongFileExists(path))) {
+              removed.add(songKey(song));
+              continue;
+            }
+            if (path.startsWith('content://') && !path.includes('/document/')) {
+              continue;
+            }
+            await deleteLocalSongWithCompanions(path);
+            removed.add(songKey(song));
+          } catch (e) {
+            skipped++;
+          }
         }
         setSongs(prev => prev.filter(s => !removed.has(songKey(s)))); exitMulti();
         if (skipped || removed.size < selectedSongs.length) AppAlert.alert('部分歌曲未删除', '系统媒体库歌曲或无权限文件请在文件管理器中删除');
@@ -199,8 +225,13 @@ export default function LocalScreen({navigation}: any) {
   };
 
   /** 长按删除本地文件 */
-  const onDeleteSong = (song: Song) => {
+  const onDeleteSong = async (song: Song) => {
     if (!song.localPath) {
+      return;
+    }
+    // 文件管理器已删除但 MediaStore 尚未刷新时，直接清理本地列表项。
+    if (!(await localSongFileExists(song.localPath))) {
+      setSongs(prev => prev.filter(s => songKey(s) !== songKey(song)));
       return;
     }
     // SAF 授权目录歌曲（content:// document uri）：原生可删，显示文件名代替原始 uri
@@ -227,7 +258,7 @@ export default function LocalScreen({navigation}: any) {
           try {
             // 连同歌词/封面/元数据附件一起删除
             await deleteLocalSongWithCompanions(song.localPath!);
-            setSongs(prev => prev.filter(s => s.localPath !== song.localPath));
+            setSongs(prev => prev.filter(s => songKey(s) !== songKey(song)));
           } catch (e) {
             AppAlert.alert('删除失败', '文件可能已被移除或没有删除权限');
           }
@@ -303,7 +334,7 @@ export default function LocalScreen({navigation}: any) {
         <TouchableOpacity
           style={styles.scanBtn}
           disabled={scanning}
-          onPress={scan}>
+          onPress={() => scan(true)}>
           <Text style={styles.scanBtnText}>
             {scanning ? '扫描中…' : '扫描歌曲'}
           </Text>

@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react';
-import TrackPlayer, {Event} from 'react-native-track-player';
+import TrackPlayer, {Event, RepeatMode, Track} from 'react-native-track-player';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
@@ -21,6 +21,31 @@ const FINISH_KEY = 'sleep_finish_track';
 let finishTrack = false; // true = 到时后播完当前歌曲再暂停
 let waitingFinish = false; // 已到时，正在等待当前歌曲播完
 let waitSubs: {remove: () => void}[] = [];
+let finishRestoreTracks: Track[] = [];
+let finishRestoreRepeatMode: RepeatMode | null = null;
+let finishHandled = false;
+let finishRestoreInFlight: Promise<void> | null = null;
+let finishPreparation: Promise<void> | null = null;
+// 每次定时器真正到期时递增。播放请求在开始时记录该值，
+// 到期后解析完成的旧请求不得再次启动播放器。
+let playbackGeneration = 0;
+
+export function getSleepPlaybackGeneration(): number {
+  return playbackGeneration;
+}
+
+export function isSleepPlaybackGenerationCurrent(generation: number): boolean {
+  return generation === playbackGeneration;
+}
+
+function restoreFinishQueueLater() {
+  void (async () => {
+    if (finishPreparation) {
+      await finishPreparation;
+    }
+    await restoreFinishQueue();
+  })();
+}
 let lastStorageSyncAt = 0;
 let syncPromise: Promise<void> | null = null;
 
@@ -36,6 +61,10 @@ export function getSleepFinishTrack(): boolean {
 
 export function setSleepFinishTrack(v: boolean) {
   finishTrack = v;
+  if (!v && waitingFinish) {
+    clearWait();
+    restoreFinishQueueLater();
+  }
   AsyncStorage.setItem(FINISH_KEY, v ? '1' : '0').catch(() => {});
   notify();
 }
@@ -51,19 +80,85 @@ function clearWait() {
   waitingFinish = false;
 }
 
+/** 恢复到时前被暂时移除的后续队列，避免定时器影响用户原播放列表。 */
+async function restoreFinishQueue() {
+  if (finishRestoreInFlight) {
+    await finishRestoreInFlight;
+    return;
+  }
+  const tracks = finishRestoreTracks;
+  const repeatMode = finishRestoreRepeatMode;
+  finishRestoreTracks = [];
+  finishRestoreRepeatMode = null;
+  if (!tracks.length && repeatMode === null) {
+    return;
+  }
+  finishRestoreInFlight = (async () => {
+    try {
+      const currentIndex = await TrackPlayer.getActiveTrackIndex();
+      if (tracks.length && typeof currentIndex === 'number') {
+        await TrackPlayer.add(tracks, currentIndex + 1);
+      }
+      if (repeatMode !== null) {
+        await TrackPlayer.setRepeatMode(repeatMode);
+      }
+    } catch (e) {
+      // 队列已被用户修改时不阻塞播放。
+    } finally {
+      finishRestoreInFlight = null;
+    }
+  })();
+  await finishRestoreInFlight;
+}
+
+/** 到时后等待当前曲目自然结束，再暂停并恢复被隔离的队列。 */
+async function finishAtCurrentBoundary() {
+  if (!waitingFinish || finishHandled) {
+    return;
+  }
+  finishHandled = true;
+  clearWait();
+  if (finishPreparation) {
+    await finishPreparation;
+  }
+  await TrackPlayer.pause().catch(() => {});
+  await restoreFinishQueue();
+  notify();
+}
+
 /** 到时后等当前歌曲播完（切歌或队列结束）再暂停 */
-function startWaitFinish() {
+async function startWaitFinish() {
   clearWait();
   waitingFinish = true;
+  finishHandled = false;
+  // 先注册监听，再异步隔离后续队列，避免曲目恰好在隔离期间结束时漏事件。
   const onDone = () => {
-    TrackPlayer.pause().catch(() => {});
-    clearWait();
-    notify();
+    void finishAtCurrentBoundary();
   };
   waitSubs = [
     TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, onDone),
     TrackPlayer.addEventListener(Event.PlaybackQueueEnded, onDone),
   ];
+  finishPreparation = (async () => {
+    try {
+      const queue = await TrackPlayer.getQueue();
+      const currentIndex = await TrackPlayer.getActiveTrackIndex();
+      finishRestoreRepeatMode = await TrackPlayer.getRepeatMode();
+      finishRestoreTracks =
+        typeof currentIndex === 'number' ? queue.slice(currentIndex + 1) : [];
+      // 取消队列循环并移除后续曲目，使当前曲目结束后直接触发 QueueEnded，
+      // 不会先激活并播放下一首。队列在暂停后再恢复。
+      await TrackPlayer.setRepeatMode(RepeatMode.Off);
+      if (finishRestoreTracks.length) {
+        await TrackPlayer.removeUpcomingTracks();
+      }
+    } catch (e) {
+      // 无法隔离队列时仍保留结束监听，作为兜底暂停。
+    } finally {
+      finishPreparation = null;
+    }
+  })();
+  await finishPreparation;
 }
 
 function notify() {
@@ -96,15 +191,18 @@ async function persistTimerState() {
 }
 
 async function handleTimerExpired() {
-  if (!endTime && !waitingFinish) {
+  // Expiry is one-shot. After switching to waitingFinish, storage syncs may
+  // observe endTime=0 again and must not restart the finish workflow.
+  if (!endTime || waitingFinish) {
     return;
   }
   clearTimeoutHandle();
   endTime = 0;
   lastMinutes = 0;
+  playbackGeneration += 1;
   await AsyncStorage.removeItem(STATE_KEY).catch(() => {});
   if (finishTrack) {
-    startWaitFinish();
+    await startWaitFinish();
   } else {
     clearWait();
     TrackPlayer.pause().catch(() => {});
@@ -159,9 +257,8 @@ async function applyStoredState(rawState: string | null, rawFinishTrack: string 
     endTime = 0;
     lastMinutes = 0;
     clearTimeoutHandle();
-    if (waitingFinish) {
-      clearWait();
-    }
+    // endTime 在“播完当前歌曲再暂停”模式下会先被清零；
+    // 此时必须保留 waitingFinish，不能被存储同步误清监听。
   } else {
     endTime = next.endTime;
     lastMinutes = next.lastMinutes;
@@ -227,7 +324,11 @@ export function setSleepTimer(minutes: number) {
 
 export function cancelSleepTimer() {
   clearTimeoutHandle();
+  const wasWaitingFinish = waitingFinish;
   clearWait();
+  if (wasWaitingFinish) {
+    restoreFinishQueueLater();
+  }
   endTime = 0;
   lastMinutes = 0;
   void AsyncStorage.removeItem(STATE_KEY).catch(() => {});

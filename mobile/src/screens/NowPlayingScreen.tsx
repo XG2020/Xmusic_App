@@ -10,7 +10,11 @@ import {
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import TrackPlayer, {Track, useActiveTrack} from 'react-native-track-player';
-import {cancelProgressiveEnqueue, saveQueueSnapshot} from '../services/player';
+import {
+  cancelPendingPlayRequest,
+  cancelProgressiveEnqueue,
+  saveQueueSnapshot,
+} from '../services/player';
 import Icon from '../components/Icon';
 import {useTheme, Theme} from '../theme';
 import {useSkin} from '../services/skin';
@@ -44,6 +48,7 @@ export default function NowPlayingScreen({navigation}: any) {
 
   const playAt = async (index: number) => {
     try {
+      cancelPendingPlayRequest();
       await TrackPlayer.skip(index);
       await TrackPlayer.play();
       setActiveIdx(index);
@@ -54,6 +59,7 @@ export default function NowPlayingScreen({navigation}: any) {
 
   const removeAt = async (index: number) => {
     try {
+      cancelPendingPlayRequest();
       await TrackPlayer.remove(index);
       await saveQueueSnapshot();
       await refresh();

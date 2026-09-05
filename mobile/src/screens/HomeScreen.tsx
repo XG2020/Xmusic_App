@@ -270,13 +270,17 @@ export function HomeTopBar({
 }
 
 /** 主页 pager 第二页：歌单广场（顶栏由外层固定 overlay 统一绘制，内容按 topPad 下移） */
-export function PlaylistTabPage({navigation, topPad = 0}: any) {
+export function PlaylistTabPage({navigation, topPad = 0, lockPager}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const skin = useSkin();
   return (
     <View style={[styles.container, !!skin.bg && styles.transparentBg]}>
-      <PlaylistSquareScreen navigation={navigation} topPad={topPad} />
+      <PlaylistSquareScreen
+        navigation={navigation}
+        topPad={topPad}
+        lockPager={lockPager}
+      />
     </View>
   );
 }

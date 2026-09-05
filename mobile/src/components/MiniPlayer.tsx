@@ -12,6 +12,7 @@ import {
   Modal,
   FlatList,
   ToastAndroid,
+  ActivityIndicator,
 } from 'react-native';
 import {useNavigation} from '@react-navigation/native';
 import TrackPlayer, {
@@ -33,6 +34,9 @@ import {
   materializePendingSession,
   subscribePendingRestore,
   subscribeQueueSnapshot,
+  getPendingPlayTrack,
+  subscribePendingPlay,
+  cancelPendingPlayRequest,
 } from '../services/player';
 import {getSwipeHintSeen, markSwipeHintSeen} from '../services/settings';
 import {useSpin} from '../utils/useSpin';
@@ -225,7 +229,18 @@ export default function MiniPlayer() {
       }),
     [],
   );
-  const track = nativeTrack ?? pendingTrack;
+  // 点歌请求尚未完成时也立即显示目标歌曲，避免迷你条继续展示已暂停的旧曲目。
+  const [pendingPlayTrack, setPendingPlayTrack] = useState<Track | null>(() =>
+    getPendingPlayTrack(),
+  );
+  useEffect(
+    () =>
+      subscribePendingPlay(() => {
+        setPendingPlayTrack(getPendingPlayTrack());
+      }),
+    [],
+  );
+  const track = pendingPlayTrack ?? nativeTrack ?? pendingTrack;
   const playback = usePlaybackState();
   const navigation = useNavigation<any>();
   const translateX = useRef(new Animated.Value(0)).current;
@@ -347,6 +362,7 @@ export default function MiniPlayer() {
 
   const playQueueItem = async (index: number) => {
     try {
+      cancelPendingPlayRequest();
       // 延迟恢复未落地时：先把快照队列灌进原生播放器（用户主动播放，允许抢焦点）
       await materializePendingSession();
       await TrackPlayer.skip(index);
@@ -448,11 +464,15 @@ export default function MiniPlayer() {
       <TouchableOpacity
         style={styles.ctrl}
         onPress={() => {
+          if (pendingPlayTrack) {
+            cancelPendingPlayRequest();
+            return;
+          }
           playing ? TrackPlayer.pause() : resumeUser();
         }}
         accessibilityRole="button"
-        accessibilityLabel={playing ? '暂停' : '播放'}
-        accessibilityState={{selected: playing}}>
+        accessibilityLabel={pendingPlayTrack ? '取消加载' : playing ? '暂停' : '播放'}
+        accessibilityState={{selected: playing, busy: !!pendingPlayTrack}}>
         {/* 圆形进度环：灰底 + 主题色进度圆弧（自订阅进度，不带动整条重渲）
         内圆背景与条底色一致（跟随板块颜色与透明度），图标用主题色 */}
         <PlayProgressRing
@@ -462,7 +482,9 @@ export default function MiniPlayer() {
           fallbackPosition={!nativeTrack ? pendingProgress.position : 0}
           fallbackDuration={!nativeTrack ? pendingProgress.duration : 0}>
           {/* 高清播控图标：pause 居中；play 三角素材自带右偏校正视觉居中 */}
-          {playing ? (
+          {pendingPlayTrack ? (
+            <ActivityIndicator size="small" color={t.primary} />
+          ) : playing ? (
             <Icon name="pause" size={14} color={t.primary} />
           ) : (
             <Icon name="play" size={14} color={t.primary} />

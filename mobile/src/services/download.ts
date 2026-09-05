@@ -2,13 +2,22 @@ import RNFS from 'react-native-fs';
 import {NativeModules} from 'react-native';
 import {getDefaultDownloadDir, getDownloadDir} from './settings';
 import type {Song} from '../types/music';
+function normalizeLocalFsPath(path: string): string {
+  const fsPath = path.replace(/^file:\/\//i, '');
+  try {
+    return decodeURI(fsPath);
+  } catch (e) {
+    return fsPath;
+  }
+}
+
 /** 校验本地音频是否仍存在；SAF content:// URI 通过原生 ContentResolver 校验。 */
 export async function localSongFileExists(path: string): Promise<boolean> {
   if (!path) {
     return false;
   }
   if (!path.startsWith('content://')) {
-    return RNFS.exists(path.replace(/^file:\/\//i, '')).catch(() => false);
+    return RNFS.exists(normalizeLocalFsPath(path)).catch(() => false);
   }
   if (NativeModules.LocalMusic?.fileExists) {
     try {
@@ -487,25 +496,32 @@ export async function deleteLocalSongWithCompanions(audioPath: string) {
   if (!audioPath) {
     return;
   }
-  // content:// URI（SAF 授权目录歌曲）：RNFS 无法删除，由原生 ContentResolver 删除；
-  // 附件下载时已回退私有附件目录（按文件名映射），删除主文件后一并清理。
-  // 注意：仅接受 document uri（单个文件），tree uri 是整个目录授权，无法定位文件，跳过
-  if (!audioPath.startsWith('/')) {
+  const isContentUri = audioPath.startsWith('content://');
+  // TrackPlayer/媒体库有时返回 file:// URL；RNFS 的删除 API 需要真实文件路径。
+  const fsPath = isContentUri ? audioPath : normalizeLocalFsPath(audioPath);
+  const exists = await localSongFileExists(audioPath);
+
+  // content:// URI（SAF 授权目录歌曲）：由原生 ContentResolver 删除。
+  // 文件可能已被系统文件管理器删除，此时按“已处理”对待，仍清理应用附件，
+  // 这样本地列表下一次扫描不会再次显示失效歌曲。
+  if (isContentUri) {
     if (!audioPath.includes('/document/')) {
       return;
     }
     const stem = companionStemFromPath(audioPath);
-    if (NativeModules.LocalMusic?.deleteFile) {
-      try {
-        await NativeModules.LocalMusic.deleteFile(audioPath);
-      } catch (e) {
-        throw new Error('文件可能已被移除或没有删除权限');
+    if (exists) {
+      if (NativeModules.LocalMusic?.deleteFile) {
+        try {
+          await NativeModules.LocalMusic.deleteFile(audioPath);
+        } catch (e) {
+          throw new Error('文件可能已被移除或没有删除权限');
+        }
+      } else {
+        throw new Error('当前系统不支持删除授权目录文件');
       }
-    } else {
-      throw new Error('当前系统不支持删除授权目录文件');
     }
     let stillUsed = false;
-    if (NativeModules.LocalMusic?.hasSiblingAudioWithBase) {
+    if (exists && NativeModules.LocalMusic?.hasSiblingAudioWithBase) {
       try {
         stillUsed = !!(await NativeModules.LocalMusic.hasSiblingAudioWithBase(
           audioPath,
@@ -516,7 +532,11 @@ export async function deleteLocalSongWithCompanions(audioPath: string) {
       }
     }
     if (!stillUsed && NativeModules.LocalMusic?.deleteSiblingFile) {
-      for (const fileName of [`${stem}.lrc`, `${stem}.jpg`, `${stem}.json`]) {
+      for (const fileName of [
+        `${stem}.lrc`,
+        `${stem}.jpg`,
+        `${stem}.json`,
+      ]) {
         await NativeModules.LocalMusic.deleteSiblingFile(
           audioPath,
           fileName,
@@ -529,10 +549,15 @@ export async function deleteLocalSongWithCompanions(audioPath: string) {
     }
     return;
   }
-  await RNFS.unlink(audioPath);
-  const base = companionBase(audioPath);
+
+  const base = companionBase(fsPath);
+  // 外部文件管理器已经删掉主文件时，RNFS.unlink 会抛 ENOENT，导致调用方无法
+  // 从列表移除。不存在应视为删除成功，而不是报错。
+  if (exists) {
+    await RNFS.unlink(fsPath);
+  }
   try {
-    const dir = audioPath.slice(0, audioPath.lastIndexOf('/'));
+    const dir = fsPath.slice(0, fsPath.lastIndexOf('/'));
     const items = await RNFS.readDir(dir);
     const stillUsed = items.some(
       i =>
@@ -547,7 +572,7 @@ export async function deleteLocalSongWithCompanions(audioPath: string) {
     // 目录扫描失败时仍继续清理附件
   }
   // 附件同时清理音频同目录与私有附件目录（回退位置）
-  const fbBase = fallbackCompanionBase(audioPath);
+  const fbBase = fallbackCompanionBase(fsPath);
   for (const ext of ['.lrc', '.jpg', '.json']) {
     await RNFS.unlink(`${base}${ext}`).catch(() => {});
     await RNFS.unlink(`${fbBase}${ext}`).catch(() => {});

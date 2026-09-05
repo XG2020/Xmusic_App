@@ -11,7 +11,14 @@ import {enrichLocalSong} from './download';
 import {hydrateDownloadedSong} from './store';
 import {ensureOnlinePlayback, isConnected, waitForNetworkState} from './network';
 import {isOfflinePlayable, preferCachedSong} from './songCache';
-import {getPlayQuality, allowMixWithOthersEnabled} from './settings';
+import {
+  getPlayQuality,
+  getAllowMix,
+} from './settings';
+import {
+  getSleepPlaybackGeneration,
+  isSleepPlaybackGenerationCurrent,
+} from './sleepTimer';
 import type {Quality} from './settings';
 import type {Song} from '../types/music';
 
@@ -74,6 +81,14 @@ export async function getPlayModeAsync(): Promise<PlayMode> {
 
 // 渐进式入队会话号：队列被替换/清空时递增，使旧的后台追加失效
 let enqueueSession = 0;
+let playRequestSerial = 0;
+
+function isPlayRequestCurrent(requestId: number, sleepGeneration: number) {
+  return (
+    requestId === playRequestSerial &&
+    isSleepPlaybackGenerationCurrent(sleepGeneration)
+  );
+}
 
 // 占位歌曲登记表：pendingKey -> 歌曲与解析器，播放切到占位曲目时可优先解析
 type PendingEntry = {song: Song; resolver: (batch: Song[]) => Promise<Song[]>};
@@ -84,6 +99,7 @@ const pendingInFlight = new Set<string>();
 export function cancelProgressiveEnqueue() {
   enqueueSession += 1;
   pendingMap.clear();
+  cancelPendingPlayRequest();
 }
 
 let playerReady = false;
@@ -96,6 +112,8 @@ type PendingSession = {tracks: Track[]; index: number; position: number};
 let pendingRestore: PendingSession | null = null;
 const pendingRestoreSubs = new Set<() => void>();
 const queueSnapshotSubs = new Set<() => void>();
+let pendingPlayTrack: Track | null = null;
+const pendingPlaySubs = new Set<() => void>();
 
 function notifyPendingRestore() {
   pendingRestoreSubs.forEach(fn => {
@@ -130,6 +148,42 @@ export function subscribeQueueSnapshot(fn: () => void): () => void {
   queueSnapshotSubs.add(fn);
   return () => {
     queueSnapshotSubs.delete(fn);
+  };
+}
+
+/** 用户已点击但尚未完成首批加载的目标曲目，供播放页立即更新显示。 */
+export function getPendingPlayTrack(): Track | null {
+  return pendingPlayTrack;
+}
+
+export function setPendingPlayTrack(track: Track | null) {
+  pendingPlayTrack = track;
+  pendingPlaySubs.forEach(fn => {
+    try {
+      fn();
+    } catch (e) {
+      // 单个订阅者异常不影响其余
+    }
+  });
+}
+
+export function clearPendingPlayTrack() {
+  if (!pendingPlayTrack) {
+    return;
+  }
+  setPendingPlayTrack(null);
+}
+
+/** 取消尚未完成的点歌请求，防止旧网络/解析任务完成后覆盖用户的新操作。 */
+export function cancelPendingPlayRequest() {
+  playRequestSerial += 1;
+  clearPendingPlayTrack();
+}
+
+export function subscribePendingPlay(fn: () => void): () => void {
+  pendingPlaySubs.add(fn);
+  return () => {
+    pendingPlaySubs.delete(fn);
   };
 }
 
@@ -200,7 +254,12 @@ export async function materializePendingSession(): Promise<boolean> {
       await TrackPlayer.skip(pending.index);
     }
     if (pending.position > 1) {
-      await TrackPlayer.seekTo(pending.position);
+      // add/skip 后原生播放器仍可能处于 Loading；直接调用原生 seekTo
+      // 会被 ExoPlayer 丢掉，导致播放页显示恢复进度但音频仍从旧位置开始。
+      // 统一等待可定位状态并确认实际位置已经变更。
+      const requestId = ++seekRequestSerial;
+      const active = (await TrackPlayer.getActiveTrack().catch(() => null)) as any;
+      await seekNativeWhenReady(pending.position, requestId, trackKey(active));
     }
     notifyPendingRestore();
     return true;
@@ -222,6 +281,9 @@ export async function setupPlayer(): Promise<boolean> {
   if (playerReady) {
     return true;
   }
+  // 设置缓存由 AsyncStorage 异步预热，冷启动时不能直接读取默认值，
+  // 否则用户关闭“允许与其他应用同时播放”后仍会按混音模式创建播放器。
+  const allowMix = await getAllowMix();
   try {
     // v4: setupPlayer 重复调用会抛错，用 try/catch 兜底。
     // autoHandleInterruptions（= KotlinAudio 的 handleAudioFocus，在播放器创建时定死）：
@@ -234,7 +296,7 @@ export async function setupPlayer(): Promise<boolean> {
     //     的曲目，手动暂停的状态不受影响。
     // 该选项只在冷启动创建播放器时生效，切换开关需重启应用。
     await TrackPlayer.setupPlayer({
-      autoHandleInterruptions: !allowMixWithOthersEnabled(),
+      autoHandleInterruptions: !allowMix,
       // 保留播放头之后的缓冲（流媒体预缓冲），配合下方 backBuffer 支持离线拖动
       maxBuffer: 60,
       // 已播放过的音频保留在缓冲中（默认 0 会立即丢弃）：
@@ -315,13 +377,25 @@ async function offlinePlayableQueue(
 }
 
 export async function playSongs(songs: Song[], startIndex = 0) {
+  const requestId = ++playRequestSerial;
+  const sleepGeneration = getSleepPlaybackGeneration();
+  clearPendingPlayTrack();
+  // 让旧的渐进式后台解析立即失效，即使 setup/network gate 仍在等待。
+  enqueueSession += 1;
+  pendingMap.clear();
   const ok = await setupPlayer();
   if (!ok) {
+    return;
+  }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
     return;
   }
   // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
   requestNotificationPermissionOnce();
   await waitForNetworkState();
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    return;
+  }
   let hydratedSongs = await Promise.all(songs.map(hydrateDownloadedSong));
   const offline = !isConnected();
   const q = await getPlayQuality();
@@ -348,6 +422,16 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   ) {
     return;
   }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    return;
+  }
+  // 网络门禁通过后立即停止旧曲并更新播放页，避免后续直链解析期间旧曲继续播放、
+  // 播放页仍显示旧曲目。首批音源准备完成后再真正灌入原生队列。
+  setPendingPlayTrack({
+    ...songToTrack(startSong),
+    url: songToTrack(startSong).url || PENDING_URL,
+  });
+  await TrackPlayer.pause().catch(() => {});
   // Only resolve missing online URLs after the playback gate has allowed network use.
   if (!offline) {
     const missingMids = [
@@ -376,9 +460,12 @@ export async function playSongs(songs: Song[], startIndex = 0) {
       }
     }
   }
-  // 使进行中的后台追加失效，避免旧列表的歌混入新队列
-  enqueueSession += 1;
-  pendingMap.clear();
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
   // 本地歌曲补全下载时保存的封面与元数据（mid/歌手等），播放页才能完整显示
   const enriched = await Promise.all(queueSongs.map(enrichLocalSong));
   // 已整曲缓存的在线曲目优先用本地文件（离线/秒开）；离线时放宽到任一已缓存音质
@@ -387,6 +474,15 @@ export async function playSongs(songs: Song[], startIndex = 0) {
   );
   const tracks = preferred.map(songToTrack).filter(t => !!t.url);
   if (!tracks.length) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
     return;
   }
   const startTrackId = songToTrack(startSong).id;
@@ -398,13 +494,49 @@ export async function playSongs(songs: Song[], startIndex = 0) {
     currentMode === 'shuffle'
       ? shuffledWithFirst([...tracks.slice(idx), ...tracks.slice(0, idx)])
       : tracks;
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
   await TrackPlayer.reset();
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
   await TrackPlayer.add(orderedTracks);
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
   // v4: skip 按队列下标；随机模式已将起播曲目放在队首
   if (currentMode !== 'shuffle' && idx > 0) {
     await TrackPlayer.skip(idx);
   }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return;
+  }
   await TrackPlayer.play();
+  if (
+    requestId === playRequestSerial &&
+    !isSleepPlaybackGenerationCurrent(sleepGeneration)
+  ) {
+    await TrackPlayer.pause().catch(() => {});
+    clearPendingPlayTrack();
+    return;
+  }
+  // 原生当前曲目事件可能在此之前或之后到达；成功启动后统一结束预览状态。
+  if (requestId === playRequestSerial) {
+    clearPendingPlayTrack();
+  }
   // 新队列建立后立即保存会话快照，重启可恢复
   saveQueueSnapshot().catch(() => {});
 }
@@ -439,6 +571,7 @@ export async function resolvePendingTrack(pendingKey: string): Promise<boolean> 
   if (!entry || pendingInFlight.has(pendingKey)) {
     return false;
   }
+  const sleepGeneration = getSleepPlaybackGeneration();
   pendingInFlight.add(pendingKey);
   try {
     const session = enqueueSession;
@@ -466,6 +599,9 @@ export async function resolvePendingTrack(pendingKey: string): Promise<boolean> 
     }
     if (qIdx === active) {
       await TrackPlayer.load(fresh);
+      if (!isSleepPlaybackGenerationCurrent(sleepGeneration)) {
+        return false;
+      }
       await TrackPlayer.play();
     } else {
       await TrackPlayer.remove(qIdx);
@@ -493,13 +629,25 @@ export async function playSongsProgressive(
   startIndex: number,
   resolver: (batch: Song[]) => Promise<Song[]>,
 ): Promise<boolean> {
+  const requestId = ++playRequestSerial;
+  const sleepGeneration = getSleepPlaybackGeneration();
+  clearPendingPlayTrack();
+  // 旧会话的后台批次必须在新点歌动作开始时立即停止。
+  enqueueSession += 1;
+  pendingMap.clear();
   const ok = await setupPlayer();
   if (!ok) {
+    return false;
+  }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
     return false;
   }
   // Android 13+ 首次播放时请求通知权限（媒体通知展示，不阻塞播放流程）
   requestNotificationPermissionOnce();
   await waitForNetworkState();
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    return false;
+  }
   const hydratedSongs = await Promise.all(songs.map(hydrateDownloadedSong));
   const offline = !isConnected();
   // 当前播放音质：用于匹配已整曲缓存的本地文件
@@ -526,7 +674,10 @@ export async function playSongsProgressive(
   ) {
     return false;
   }
-  const session = ++enqueueSession;
+  if (!isPlayRequestCurrent(requestId, sleepGeneration)) {
+    return false;
+  }
+  const session = enqueueSession;
   const FIRST = 12;
   const BATCH = 30;
   // 从已下载/本地歌曲开始播放时只物化当前歌曲，避免顺带解析后续在线歌曲消耗流量。
@@ -552,8 +703,29 @@ export async function playSongsProgressive(
   // 首批：解析直链后立即开播
   const firstCount = localStart ? 1 : FIRST;
   const firstBatch = ordered.slice(0, firstCount);
+  // 网络门禁通过后先暂停旧曲并预览目标曲目；resolver/缓存准备期间播放页
+  // 应显示用户刚点击的歌曲，而不是继续显示并播放上一首。
+  setPendingPlayTrack({
+    ...songToTrack(startSong),
+    url: songToTrack(startSong).url || PENDING_URL,
+  });
+  await TrackPlayer.pause().catch(() => {});
   // 本地起播不调用 resolver，避免榜单等解析器为补 mid/直链发起网络请求。
-  const resolvedFirst = localStart ? firstBatch : await resolver(firstBatch);
+  let resolvedFirst: Song[];
+  try {
+    resolvedFirst = localStart ? firstBatch : await resolver(firstBatch);
+  } catch (e) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
+  if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
   const enrichedFirst = await Promise.all(resolvedFirst.map(enrichLocalSong));
   // 已整曲缓存的在线曲目优先用本地文件
   const preferredFirst = await Promise.all(
@@ -564,6 +736,9 @@ export async function playSongsProgressive(
     return false;
   }
   if (!firstTracks.length) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
     return false;
   }
   // 其余歌曲立即以占位入队：本地路径/旧直链可直接播，否则挂占位地址等待替换
@@ -584,6 +759,12 @@ export async function playSongsProgressive(
         }),
       )
     : rest;
+  if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
   pendingMap.clear();
   const pendingTracks = preparedRest.map((s, i) => {
     const key = `pk-${session}-${i}`;
@@ -595,12 +776,48 @@ export async function playSongsProgressive(
     } as Track;
   });
 
+  if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
   await TrackPlayer.reset();
+  if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
   await TrackPlayer.add(firstTracks);
+  if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+    if (requestId === playRequestSerial) {
+      clearPendingPlayTrack();
+    }
+    return false;
+  }
   if (pendingTracks.length) {
     await TrackPlayer.add(pendingTracks);
+    if (!isPlayRequestCurrent(requestId, sleepGeneration) || session !== enqueueSession) {
+      if (requestId === playRequestSerial) {
+        clearPendingPlayTrack();
+      }
+      return false;
+    }
   }
   await TrackPlayer.play();
+  if (
+    requestId === playRequestSerial &&
+    !isSleepPlaybackGenerationCurrent(sleepGeneration)
+  ) {
+    await TrackPlayer.pause().catch(() => {});
+    clearPendingPlayTrack();
+    return false;
+  }
+  // 首批队列已经真正启动，即使起播曲目被过滤，也不能继续显示加载中。
+  if (requestId === playRequestSerial) {
+    clearPendingPlayTrack();
+  }
   // 新队列建立后立即保存会话快照（不等切歌事件），重启可恢复
   saveQueueSnapshot().catch(() => {});
 
@@ -702,6 +919,10 @@ export async function playSongsProgressive(
 }
 
 export async function togglePlay() {
+  // 播放目标仍在解析时，不能把已暂停的旧曲目重新启动。
+  if (pendingPlayTrack) {
+    return;
+  }
   const {state} = await TrackPlayer.getPlaybackState();
   if (state === State.Playing) {
     await TrackPlayer.pause();
@@ -722,6 +943,10 @@ export async function togglePlay() {
  * 供 MiniPlayer 播放键等前台入口调用；通知栏 RemotePlay 走 playbackService 的同步拦截。
  */
 export async function resumeUser() {
+  // 播放目标仍在解析时，不能把已暂停的旧曲目重新启动。
+  if (pendingPlayTrack) {
+    return;
+  }
   const tr = await currentTrackForGate();
   if (isTrackOnline(tr) && !(await ensureOnlinePlayback())) {
     return;
@@ -733,6 +958,7 @@ export async function resumeUser() {
 
 /** 用户主动下一曲（前台门禁版）：当前队列为在线内容时先过网络门禁 */
 export async function skipToNextUser(mode?: PlayMode) {
+  cancelPendingPlayRequest();
   const tr = await currentTrackForGate();
   if (isTrackOnline(tr) && !(await ensureOnlinePlayback())) {
     return;
@@ -743,6 +969,7 @@ export async function skipToNextUser(mode?: PlayMode) {
 
 /** 用户主动上一曲（前台门禁版）：当前队列为在线内容时先过网络门禁 */
 export async function skipToPreviousUser() {
+  cancelPendingPlayRequest();
   const tr = await currentTrackForGate();
   if (isTrackOnline(tr) && !(await ensureOnlinePlayback())) {
     return;
@@ -759,8 +986,8 @@ export async function setPlayMode(mode: PlayMode) {
   } else {
     await TrackPlayer.setRepeatMode(RepeatMode.Queue);
     if (mode === 'shuffle') {
-      // RNTP 的 Queue repeat 仍按队列顺序前进，进入随机模式时先将队列
-      // 洗牌并保留当前曲目在当前位置，使自动连播与手动下一曲一致。
+      // RNTP 的 Queue repeat 仍按队列顺序前进。使用原地 move() 洗牌，
+      // 不 reset/add 当前音源，避免切换随机模式时停止并重新准备解码器。
       try {
         const queue = await TrackPlayer.getQueue();
         const current = (await TrackPlayer.getActiveTrackIndex()) ?? 0;
@@ -771,15 +998,16 @@ export async function setPlayMode(mode: PlayMode) {
             const j = Math.floor(Math.random() * (i + 1));
             [rest[i], rest[j]] = [rest[j], rest[i]];
           }
-          const playback = await TrackPlayer.getPlaybackState();
-          const progress = await TrackPlayer.getProgress();
-          await TrackPlayer.reset();
-          await TrackPlayer.add([currentTrack, ...rest]);
-          if (progress.position > 0) {
-            await TrackPlayer.seekTo(progress.position);
-          }
-          if (playback.state === State.Playing) {
-            await TrackPlayer.play();
+          const desired = [currentTrack, ...rest];
+          const working = [...queue];
+          for (let target = 0; target < desired.length; target += 1) {
+            const from = working.indexOf(desired[target]);
+            if (from < 0 || from === target) {
+              continue;
+            }
+            await TrackPlayer.move(from, target);
+            const [moved] = working.splice(from, 1);
+            working.splice(target, 0, moved);
           }
           notifyQueueSnapshot();
           saveQueueSnapshot().catch(() => {});
@@ -818,18 +1046,169 @@ export async function skipToPrevious() {
   }
 }
 
-export async function seekTo(position: number) {
+let seekRequestSerial = 0;
+let seekInFlight = 0;
+
+/** 当前是否有前台/后台定位请求正在等待原生播放器确认。 */
+export function isSeekInFlight(): boolean {
+  return seekInFlight > 0;
+}
+
+const wait = (ms: number) =>
+  new Promise<void>(resolve => {
+    setTimeout(resolve, ms);
+  });
+
+function trackKey(track: any): string {
+  return String(track?.id ?? track?.mid ?? track?.url ?? '');
+}
+
+/**
+ * ExoPlayer 在歌曲刚切入队列、还处于 Loading 时，可能会让 seekTo() 正常返回，
+ * 但把 seek 丢掉；这在播放页初始化阶段尤其明显：UI 先显示了目标时间，声音却
+ * 仍从旧位置开始。等待原生曲目进入可定位状态，并确认真实进度已经接近目标；
+ * 如果第一次 seek 被初始化流程覆盖，则在短窗口内重试。新的拖动请求会取消旧
+ * 请求，避免连续拖动时旧目标反过来覆盖新目标。
+ */
+async function seekNativeWhenReady(
+  position: number,
+  requestId: number,
+  expectedTrackKey: string,
+  timeoutMs = 3500,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown = null;
+  let commandAttempts = 0;
+
+  while (Date.now() < deadline && commandAttempts < 2) {
+    if (requestId !== seekRequestSerial) {
+      return false;
+    }
+
+    try {
+      const queue = await TrackPlayer.getQueue();
+      const active = (await TrackPlayer.getActiveTrack()) as any;
+      if (
+        !queue.length ||
+        !active ||
+        (expectedTrackKey && trackKey(active) !== expectedTrackKey)
+      ) {
+        await wait(100);
+        continue;
+      }
+
+      const playback = await TrackPlayer.getPlaybackState();
+      if (playback.state === State.Error) {
+        await TrackPlayer.retry().catch(() => {});
+        await wait(150);
+        continue;
+      }
+      // 只在真正进入可定位状态后发命令。不要通过 pause/skip/load 重建当前
+      // 曲目：这些操作会让 ExoPlayer 回到旧位置，是进度条“跳回/乱跳”的主要
+      // 来源，也会打断已经正常播放的音频。
+      if ((playback.state as State) === State.Loading || playback.state === State.None) {
+        await wait(100);
+        continue;
+      }
+
+      const before = await TrackPlayer.getProgress();
+      const duration = Number(before.duration || active.duration || 0);
+      const beforePosition = Number(before.position) || 0;
+      const target =
+        duration > 0
+          ? Math.min(Math.max(position, 0), Math.max(duration - 0.05, 0))
+          : Math.max(position, 0);
+      const tolerance = Math.min(1.25, Math.max(0.35, duration > 0 ? duration * 0.001 : 0.75));
+      const wasPlaying =
+        playback.state === State.Playing ||
+        playback.state === State.Buffering ||
+        playback.state === State.Connecting;
+
+      commandAttempts += 1;
+      // 保持原有播放/暂停意图，seek 本身不再主动 pause 或 play。
+      await TrackPlayer.seekTo(target);
+
+      // seekTo 返回只代表命令已提交，等待 RNTP 的真实 position 更新。只
+      // 允许一次补发，避免旧命令在多个轮询周期里反复覆盖用户的新目标。
+      const confirmDeadline = Date.now() + Math.min(1400, Math.max(700, timeoutMs / 2));
+      while (Date.now() < confirmDeadline) {
+        if (requestId !== seekRequestSerial) {
+          return false;
+        }
+        await wait(100);
+        const current = (await TrackPlayer.getActiveTrack().catch(() => null)) as any;
+        if (expectedTrackKey && trackKey(current) !== expectedTrackKey) {
+          return false;
+        }
+        const currentProgress = await TrackPlayer.getProgress().catch(() => ({position: 0, duration}));
+        const actualPosition = Number(currentProgress.position) || 0;
+        // 向后定位必须确认播放器真的回到目标附近；不能只判断
+        // “当前位置大于目标”，否则从 3:00 拖回 1:00 会被旧位置误判
+        // 成功，随后 UI 又会跳回原处。向前定位允许播放器在确认期间
+        // 越过目标少量时间，但仍限制上界，避免把旧位置当成新目标。
+        const movedBackward = target < beforePosition - tolerance;
+        const reachedTarget = movedBackward
+          ? Math.abs(actualPosition - target) <= tolerance
+          : actualPosition >= target - tolerance && actualPosition <= target + 1.5;
+        const forwardAfterTarget = wasPlaying && reachedTarget;
+        const pausedAtTarget = !wasPlaying && Math.abs(actualPosition - target) <= tolerance;
+        if (forwardAfterTarget || pausedAtTarget) {
+          return true;
+        }
+      }
+    } catch (e) {
+      lastError = e;
+    }
+
+    // 第二次只重发同一个目标，不重载/重跳队列；这能覆盖首次进入页面时
+    // 原生刚完成 prepare、第一次 seek 被吞掉的情况，同时不会引入大幅跳位。
+    if (Date.now() < deadline) {
+      await wait(180);
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error(`seek timeout: ${position}`);
+}
+
+export async function seekTo(
+  position: number,
+  options?: {timeoutMs?: number},
+) {
   const nextPosition = Math.max(0, position);
+
   // 冷启动恢复的会话在用户首次点播放前尚未灌入原生播放器。此时如果仍对
   // TrackPlayer.seekTo 调用，定位会落在空队列上；随后 materialize 又按旧快照
   // 加载，表现为进度条在点播放后跳回原位置。先更新快照即可保留用户的定位。
   if (pendingRestore) {
-    pendingRestore.position = nextPosition;
+    const nativeQueue = await TrackPlayer.getQueue().catch(() => [] as any[]);
+    if (!nativeQueue.length) {
+      pendingRestore.position = nextPosition;
+      notifyPendingRestore();
+      await savePlayPosition(nextPosition);
+      return;
+    }
+    // 其他入口已经建立原生队列时，以原生队列为准，不能继续只更新已经
+    // 失效的恢复快照，否则播放页看似定位成功但实际音频仍在旧位置。
+    pendingRestore = null;
     notifyPendingRestore();
-    await savePlayPosition(nextPosition);
-    return;
   }
-  await TrackPlayer.seekTo(nextPosition);
+
+  const requestId = ++seekRequestSerial;
+  const active = (await TrackPlayer.getActiveTrack().catch(() => null)) as any;
+  seekInFlight += 1;
+  try {
+    await seekNativeWhenReady(
+      nextPosition,
+      requestId,
+      trackKey(active),
+      options?.timeoutMs ?? 8000,
+    );
+  } finally {
+    seekInFlight = Math.max(0, seekInFlight - 1);
+  }
 }
 
 /** 插入到当前曲目之后（下一曲播放），必要时先解析直链 */
@@ -892,7 +1271,7 @@ export async function applyQualityToCurrent(q: Quality): Promise<boolean> {
     const {state} = await TrackPlayer.getPlaybackState();
     await TrackPlayer.load({...track, url});
     // load() 会把进度重置到 0：无条件恢复原进度，避免切音质时从头重播
-    await TrackPlayer.seekTo(position);
+    await seekTo(position);
     if (state === State.Playing) {
       await TrackPlayer.play();
     }

@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  GestureResponderEvent,
 } from 'react-native';
 import {
   getPlaylistCategories,
@@ -45,7 +46,11 @@ export function formatListen(n?: number) {
  * 下方为官网歌单广场分类（横滑 chips + 展开全部分组网格），
  * 列表数据来自官方分类接口，点击进入在线歌单页加载歌曲
  */
-export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
+export default function PlaylistSquareScreen({
+  navigation,
+  topPad = 0,
+  lockPager,
+}: any) {
   const {t} = useTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   // 官网分类分组（语种/流派/主题/心情/场景）
@@ -68,6 +73,36 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
   const loadedRef = useRef(false);
   // 已收藏歌单 id 集合（收藏/取消实时刷新）
   const favIds = useFavPlaylistIds();
+
+  // 分类面板与主页横向 pager 共享触摸事件：只在确认是纵向/斜向手势后
+  // 锁住外层 pager，保留明确横向手势的切页能力。
+  const categoryGateStart = useRef({x: 0, y: 0});
+  const categoryGateDecided = useRef(false);
+  const onCategoryTouchStart = (e: GestureResponderEvent) => {
+    categoryGateStart.current = {
+      x: e.nativeEvent.pageX,
+      y: e.nativeEvent.pageY,
+    };
+    categoryGateDecided.current = false;
+  };
+  const onCategoryTouchMove = (e: GestureResponderEvent) => {
+    if (categoryGateDecided.current) {
+      return;
+    }
+    const dx = e.nativeEvent.pageX - categoryGateStart.current.x;
+    const dy = e.nativeEvent.pageY - categoryGateStart.current.y;
+    if (Math.abs(dx) < 6 && Math.abs(dy) < 6) {
+      return;
+    }
+    categoryGateDecided.current = true;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.2) {
+      lockPager?.(true);
+    }
+  };
+  const onCategoryTouchEnd = () => {
+    categoryGateDecided.current = false;
+    lockPager?.(false);
+  };
 
   const loadFirst = async (c: PlaylistCategory) => {
     await waitForNetworkState();
@@ -199,7 +234,13 @@ export default function PlaylistSquareScreen({navigation, topPad = 0}: any) {
 
       {expanded ? (
         // 全部分类面板：按官网分组展示网格
-        <ScrollView showsVerticalScrollIndicator={false}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+          onTouchStart={onCategoryTouchStart}
+          onTouchMove={onCategoryTouchMove}
+          onTouchEnd={onCategoryTouchEnd}
+          onTouchCancel={onCategoryTouchEnd}>
           {groups.map(g => (
             <View key={g.group}>
               <Text style={styles.catGroupTitle}>{g.group}</Text>

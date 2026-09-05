@@ -16,6 +16,7 @@ import {
   Switch,
   TouchableWithoutFeedback,
   ToastAndroid,
+  ActivityIndicator,
 } from 'react-native';
 import {AppAlert} from '../components/AppDialog';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -57,6 +58,9 @@ import {
   getPendingRestoreProgress,
   getPendingRestoreTrack,
   subscribePendingRestore,
+  getPendingPlayTrack,
+  subscribePendingPlay,
+  cancelPendingPlayRequest,
 } from '../services/player';
 import {cacheProgressOf, subscribeCacheProgress} from '../services/songCache';
 import {isConnected, subscribeNetwork} from '../services/network';
@@ -83,7 +87,6 @@ const RATE_OPTIONS = [
   2.0,
 ];
 const TIMER_PRESETS = [15, 30, 45, 60];
-
 function fmtCountdown(sec: number) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
@@ -112,21 +115,30 @@ const ProgressSection = React.memo(function ProgressSection({
   styles,
   lockPager,
   songMid,
+  trackKey,
   isLocal,
   fallbackPosition = 0,
   fallbackDuration = 0,
+  onSeekingChange,
+  pendingPlay = false,
 }: {
   styles: ReturnType<typeof createStyles>;
   lockPager: (locked: boolean) => void;
   songMid?: string;
+  trackKey?: string;
   isLocal: boolean;
   fallbackPosition?: number;
   fallbackDuration?: number;
+  onSeekingChange?: (seeking: boolean) => void;
+  pendingPlay?: boolean;
 }) {
   const progress = useProgress(500);
-  const effectiveDuration = progress.duration || fallbackDuration;
-  const effectivePosition =
-    progress.duration > 0 || progress.position > 0
+  const effectiveDuration = pendingPlay
+    ? fallbackDuration
+    : progress.duration || fallbackDuration;
+  const effectivePosition = pendingPlay
+    ? fallbackPosition
+    : progress.duration > 0 || progress.position > 0
       ? progress.position
       : fallbackPosition;
   // 订阅整曲下载进度：缓存条显示「实际能播到哪」，下载推进时刷新本组件
@@ -139,8 +151,15 @@ const ProgressSection = React.memo(function ProgressSection({
   const [dragPct, setDragPct] = useState<number | null>(null);
   const barWidthRef = useRef(0);
   const dragStartX = useRef(0);
+  const dragRatioRef = useRef(0);
+  const dragHasPositionRef = useRef(false);
   const durationRef = useRef(0);
   durationRef.current = effectiveDuration;
+  // seekTo 是异步的，原生进度事件可能仍返回旧位置。保持目标位置显示，
+  // 直到播放器真正回报接近目标的位置，避免松手后圆点立即跳回原处。
+  const pendingSeekRef = useRef<{target: number; token: number} | null>(null);
+  const seekTokenRef = useRef(0);
+  const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 供拖动松手回调读取最新值（PanResponder 闭包仅在创建时捕获一次）
   const connectedRef = useRef(connected);
   connectedRef.current = connected;
@@ -148,6 +167,42 @@ const ProgressSection = React.memo(function ProgressSection({
   const fullyCachedRef = useRef(false);
   // 离线时「可连续播放到的秒数上限」：拖过此处则定位后暂停
   const playableEndRef = useRef(0);
+
+  useEffect(() => {
+    // 切歌时清除上一首的 seek 临时状态，避免旧目标覆盖新曲目的真实进度。
+    pendingSeekRef.current = null;
+    onSeekingChange?.(false);
+    if (seekTimerRef.current) {
+      clearTimeout(seekTimerRef.current);
+      seekTimerRef.current = null;
+    }
+    setDragPct(null);
+  }, [trackKey, onSeekingChange]);
+
+  useEffect(() => {
+    const pending = pendingSeekRef.current;
+    if (!pending || !effectiveDuration) {
+      return;
+    }
+    const tolerance = Math.max(1.25, effectiveDuration * 0.005);
+    if (Math.abs(effectivePosition - pending.target) <= tolerance) {
+      pendingSeekRef.current = null;
+      onSeekingChange?.(false);
+      if (seekTimerRef.current) {
+        clearTimeout(seekTimerRef.current);
+        seekTimerRef.current = null;
+      }
+      setDragPct(null);
+    }
+  }, [effectiveDuration, effectivePosition, onSeekingChange]);
+
+  useEffect(
+    () => () => {
+      if (seekTimerRef.current) {
+        clearTimeout(seekTimerRef.current);
+      }
+    },
+  );
 
   const clampRatio = (x: number) =>
     Math.min(Math.max(barWidthRef.current ? x / barWidthRef.current : 0, 0), 1);
@@ -162,36 +217,86 @@ const ProgressSection = React.memo(function ProgressSection({
       onPanResponderGrant: e => {
         lockPager(true);
         dragStartX.current = e.nativeEvent.locationX;
-        setDragPct(clampRatio(e.nativeEvent.locationX));
+        dragRatioRef.current = clampRatio(e.nativeEvent.locationX);
+        dragHasPositionRef.current = false;
+        setDragPct(dragRatioRef.current);
       },
       onPanResponderMove: (_e, g) => {
-        setDragPct(clampRatio(dragStartX.current + g.dx));
+        dragRatioRef.current = clampRatio(dragStartX.current + g.dx);
+        dragHasPositionRef.current = true;
+        setDragPct(dragRatioRef.current);
       },
       onPanResponderRelease: (_e, g) => {
-        lockPager(false);
-        const ratio = clampRatio(dragStartX.current + g.dx);
+        // Android 的 release.locationX 在手指离开/跨越子视图时可能回到 0 或
+        // 变成旧坐标。以 move 阶段持续记录的最后位置为准，避免松手瞬间跳回
+        // 原位置或跳到进度条开头。
+        const releaseRatio = dragHasPositionRef.current
+          ? dragRatioRef.current
+          : Number.NaN;
+        const fallbackRatio = clampRatio(dragStartX.current + g.dx);
+        const ratio = Number.isFinite(releaseRatio) ? releaseRatio : fallbackRatio;
+        dragHasPositionRef.current = false;
         const dur = durationRef.current;
-        if (dur) {
-          const target = ratio * dur;
-          // 离线 + 在线曲目：拖到尚未缓冲(不可离线播放)的区域会让 ExoPlayer 重新
-          // 联网打开数据源，离线必然失败并触发 PlaybackError，反而冲掉已缓冲的音频、
-          // 导致这首歌连已听区段都无法继续播放。此时「不 seek」，仅提示，让播放停留在
-          // 已缓冲区域（本地/已整曲缓存的歌曲不受限，可任意拖动）。
-          if (
-            !connectedRef.current &&
-            !fullyCachedRef.current &&
-            target > playableEndRef.current + 2
-          ) {
-            ToastAndroid.show('该位置尚未缓存，无法离线播放', ToastAndroid.SHORT);
-          } else {
-            seekTo(target);
-          }
+        if (!dur) {
+          lockPager(false);
+          setDragPct(null);
+          return;
         }
-        // 稍延迟恢复真实进度，避免 seek 生效前圆点瞬间跳回
-        setTimeout(() => setDragPct(null), 400);
+        const target = ratio * dur;
+        // 离线 + 在线曲目：拖到尚未缓冲(不可离线播放)的区域会让 ExoPlayer 重新
+        // 联网打开数据源，离线必然失败并触发 PlaybackError，反而冲掉已缓冲的音频、
+        // 导致这首歌连已听区段都无法继续播放。此时「不 seek」，仅提示，让播放停留在
+        // 已缓冲区域（本地/已整曲缓存的歌曲不受限，可任意拖动）。
+        if (
+          !connectedRef.current &&
+          !fullyCachedRef.current &&
+          target > playableEndRef.current + 2
+        ) {
+          ToastAndroid.show('该位置尚未缓存，无法离线播放', ToastAndroid.SHORT);
+          lockPager(false);
+          setDragPct(null);
+          return;
+        }
+
+        const token = ++seekTokenRef.current;
+        pendingSeekRef.current = {target, token};
+        onSeekingChange?.(true);
+        setDragPct(ratio);
+        if (seekTimerRef.current) {
+          clearTimeout(seekTimerRef.current);
+        }
+        // 保留目标位置一段时间，给 ExoPlayer 处理本地大 FLAC 的 seek 留出时间；
+        // 若原生没有回报新位置，也要最终恢复真实值而不是永久显示假进度。
+        seekTimerRef.current = setTimeout(() => {
+          if (pendingSeekRef.current?.token === token) {
+            pendingSeekRef.current = null;
+            onSeekingChange?.(false);
+            setDragPct(null);
+          }
+          seekTimerRef.current = null;
+        }, 8000);
+        seekTo(target, {timeoutMs: 8000})
+          .catch(() => {
+            if (pendingSeekRef.current?.token === token) {
+              pendingSeekRef.current = null;
+              onSeekingChange?.(false);
+              setDragPct(null);
+            }
+          })
+          .finally(() => {
+            if (pendingSeekRef.current?.token === token) {
+              onSeekingChange?.(false);
+            }
+            // 让 seek 请求先进入原生队列后再恢复横向翻页，避免 release 与 pager
+            // 同时处理导致 seek 被取消。
+            setTimeout(() => lockPager(false), 120);
+          });
       },
       onPanResponderTerminate: () => {
         lockPager(false);
+        pendingSeekRef.current = null;
+        onSeekingChange?.(false);
+        dragHasPositionRef.current = false;
         setDragPct(null);
       },
     }),
@@ -207,7 +312,7 @@ const ProgressSection = React.memo(function ProgressSection({
   const dlRatio = cacheProgressOf(songMid);
   const fullyCached = isLocal || dlRatio >= 1;
   fullyCachedRef.current = fullyCached;
-  const bufferedRatio = effectiveDuration
+  const bufferedRatio = !pendingPlay && effectiveDuration
     ? progress.buffered / effectiveDuration
     : 0;
   // 缓存条仅表示「整曲缓存进度」：
@@ -283,7 +388,17 @@ export default function PlayerScreen({navigation}: any) {
       }),
     [],
   );
-  const track = nativeTrack ?? pendingTrack;
+  const [pendingPlayTrack, setPendingPlayTrack] = useState<Track | null>(() =>
+    getPendingPlayTrack(),
+  );
+  useEffect(
+    () =>
+      subscribePendingPlay(() => {
+        setPendingPlayTrack(getPendingPlayTrack());
+      }),
+    [],
+  );
+  const track = pendingPlayTrack ?? nativeTrack ?? pendingTrack;
   // 播放模式取全局持久化状态，切换播放列表/重进播放页不重置
   const [mode, setMode] = useState<PlayMode>(getPlayMode());
   useEffect(() => {
@@ -328,7 +443,22 @@ export default function PlayerScreen({navigation}: any) {
     return () => clearInterval(iv);
   }, [refreshSleepState, timerSheet]);
 
-  const playing = playback.state === State.Playing;
+  const playbackState = playback.state as string;
+  const [seeking, setSeeking] = useState(false);
+  const loading =
+    !!pendingPlayTrack ||
+    seeking ||
+    playbackState === State.Loading ||
+    playbackState === State.Buffering ||
+    playbackState === State.Connecting;
+  const playing = playbackState === State.Playing;
+  const loadingState =
+    playbackState === State.Loading ||
+    playbackState === State.Buffering ||
+    playbackState === State.Connecting;
+  const canPauseLoading =
+    !pendingPlayTrack && !seeking && loadingState && !!nativeTrack;
+  const controlsLocked = loading;
 
   // 封面连续旋转动画（暂停停在原角度，恢复继续转），可在设置中关闭
   const [spinOn, setSpinOn] = useState(coverSpinEnabled());
@@ -464,7 +594,7 @@ export default function PlayerScreen({navigation}: any) {
       if (!duration) {
         return;
       }
-      seekTo(Math.min(Math.max(position + delta, 0), duration));
+      await seekTo(Math.min(Math.max(position + delta, 0), duration), {timeoutMs: 8000});
     } catch (e) {}
   };
 
@@ -706,16 +836,20 @@ export default function PlayerScreen({navigation}: any) {
               styles={styles}
               lockPager={lockPager}
               songMid={track?.mid ? String(track.mid) : undefined}
+              trackKey={String(track?.id ?? track?.url ?? '')}
               isLocal={
                 !!track?.url && !/^https?:/i.test(String(track.url))
               }
               fallbackPosition={!nativeTrack ? pendingProgress.position : 0}
               fallbackDuration={!nativeTrack ? pendingProgress.duration : 0}
+              onSeekingChange={setSeeking}
+              pendingPlay={!!pendingPlayTrack}
             />
 
             {/* 播放控制 */}
             <View style={styles.controls}>
               <TouchableOpacity
+                disabled={controlsLocked}
                 onPress={cycleMode}
                 accessibilityRole="button"
                 accessibilityLabel={`播放模式：${
@@ -725,6 +859,7 @@ export default function PlayerScreen({navigation}: any) {
                 <Icon name={MODE_ICON[mode]} size={45} color={t.playerSub} />
               </TouchableOpacity>
               <TouchableOpacity
+                disabled={controlsLocked}
                 onPress={() => skipToPreviousUser()}
                 accessibilityRole="button"
                 accessibilityLabel="上一首">
@@ -732,19 +867,47 @@ export default function PlayerScreen({navigation}: any) {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.playBtn}
+                disabled={seeking}
                 onPress={() => {
+                  if (pendingPlayTrack) {
+                    cancelPendingPlayRequest();
+                    return;
+                  }
+                  if (seeking) {
+                    return;
+                  }
+                  if (canPauseLoading) {
+                    TrackPlayer.pause();
+                    return;
+                  }
                   playing ? TrackPlayer.pause() : resumeUser();
                 }}
                 accessibilityRole="button"
-                accessibilityLabel={playing ? '暂停' : '播放'}>
-                <Icon
-                  name={playing ? 'pause' : 'play'}
-                  size={26}
-                  color="#fff"
-                  style={playing ? undefined : styles.playIconShift}
-                />
+                accessibilityLabel={
+                  pendingPlayTrack
+                    ? '取消加载'
+                    : seeking
+                      ? '正在定位'
+                      : loadingState
+                        ? '暂停'
+                        : playing
+                          ? '暂停'
+                          : '播放'
+                }
+                accessibilityState={{busy: loading, disabled: seeking}}>
+                {loading ? (
+                  <ActivityIndicator size="large" color="#fff" />
+                ) : (
+                  <Icon
+                    name={playing ? 'pause' : 'play'}
+                    size={26}
+                    color="#fff"
+                    style={playing ? undefined : styles.playIconShift}
+                  />
+                )}
               </TouchableOpacity>
               <TouchableOpacity
+                disabled={controlsLocked}
                 onPress={() => skipToNextUser(mode)}
                 accessibilityRole="button"
                 accessibilityLabel="下一首">

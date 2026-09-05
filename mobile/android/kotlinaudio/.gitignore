@@ -1,0 +1,5 @@
+/build
+# The vendored runtime only needs main sources; upstream test fixtures include
+# large audio files and are intentionally excluded from this app module.
+/src/androidTest/
+/src/test/

@@ -11,6 +11,10 @@ import {
   savePlayPosition,
   resolvePendingTrack,
   skipToNext,
+  seekTo,
+  isSeekInFlight,
+  getPendingPlayTrack,
+  clearPendingPlayTrack,
   PENDING_URL,
 } from './player';
 import {syncSleepTimerState} from './sleepTimer';
@@ -57,23 +61,37 @@ export default async function playbackService() {
   TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.stop());
 
   TrackPlayer.addEventListener(Event.RemoteSeek, event =>
-    TrackPlayer.seekTo(event.position),
+    seekTo(event.position).catch(() => {}),
   );
 
   // 切歌（含队列自动播放下一首）时写入最近播放，保证列表实时刷新
   // 本地文件已被删除时：Toast 提示并自动跳下一首（连续跳保护，避免全队列缺失死循环）
   let missingSkips = 0;
+  const localTrackKey = (tr: any) =>
+    String(tr?.id ?? tr?.mid ?? tr?.url ?? '');
+  const isLocalTrack = (tr: any) => {
+    const url = String(tr?.url ?? '');
+    return !!url && !/^https?:/i.test(url) && url !== PENDING_URL;
+  };
+
   TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, async e => {
     const tr = e.track as any;
     if (!tr?.title) {
       return;
+    }
+    const pending = getPendingPlayTrack();
+    const pendingKey = String(pending?.id ?? pending?.mid ?? pending?.url ?? '');
+    const activeKey = String(tr.id ?? tr.mid ?? tr.url ?? '');
+    if (pending && pendingKey && pendingKey === activeKey) {
+      // 只接受与当前请求目标匹配的事件，避免旧队列的迟到事件清掉新请求。
+      clearPendingPlayTrack();
     }
     const url = typeof tr.url === 'string' ? tr.url : '';
     // 切到还未解析直链的占位曲目：立即优先解析这首，不等后台批次轮到
     if (tr.pendingKey && url === PENDING_URL) {
       resolvePendingTrack(tr.pendingKey).catch(() => {});
     }
-    const isLocal = !!url && !/^https?:/i.test(url);
+    const isLocal = !!url && !/^https?:/i.test(url) && url !== PENDING_URL;
     if (isLocal) {
       const exists = await localSongFileExists(url);
       if (!exists) {
@@ -145,6 +163,26 @@ export default async function playbackService() {
   TrackPlayer.addEventListener(Event.PlaybackError, async () => {
     try {
       const tr = (await TrackPlayer.getActiveTrack()) as any;
+      if (isLocalTrack(tr)) {
+        // 本地坏帧由自编译 FFmpeg 原生扩展解码器处理；JS 层不再 seek/reload，避免打断
+        // 解码线程和已经输出的 PCM 缓冲。
+        return;
+      }
+      // 用户正在拖动进度条时，PlaybackError 可能只是 seek 触发的瞬态状态。
+      // 不要并行刷新直链/load，否则会把用户目标覆盖回新音源的 0 秒。
+      if (isSeekInFlight()) {
+        return;
+      }
+      // PlaybackError 事件有时在网络流仍处于 Buffering/Connecting 时到达。
+      // 这类状态不是媒体地址失效，必须交给 ExoPlayer 继续等待缓冲，
+      // 不能因为进度暂时不变而重新 load 或改变播放位置。
+      const onlinePlayback = await TrackPlayer.getPlaybackState().catch(() => null);
+      if (
+        onlinePlayback?.state === State.Buffering ||
+        onlinePlayback?.state === State.Connecting
+      ) {
+        return;
+      }
       if (tr?.pendingKey) {
         if (tr.url === PENDING_URL) {
           ToastAndroid.show('歌曲地址解析中，请稍候…', ToastAndroid.SHORT);
@@ -159,18 +197,55 @@ export default async function playbackService() {
       if (!isConnected()) {
         return;
       }
-      // 在线曲目直链失效（缓存/会话快照里的旧地址过期）：绕过缓存重取直链替换续播
+      // 在线流只有在错误状态持续后才刷新失效直链；网络流刚进入
+      // Buffering/短暂 Error 时交给原生播放器继续恢复。
+      await new Promise(resolve => setTimeout(resolve, 1800));
+      const stillActive = (await TrackPlayer.getActiveTrack().catch(() => null)) as any;
+      if (localTrackKey(stillActive) !== localTrackKey(tr)) {
+        return;
+      }
+      const delayedState = (await TrackPlayer.getPlaybackState().catch(() => null))?.state;
+      if (delayedState !== State.Error) {
+        return;
+      }
+      // 在线曲目直链失效（缓存/会话快照里的旧地址过期）时，绕过缓存
+      // 重取直链；帧级错误由原生 decoder fallback 负责。
       const mid = tr?.mid ? String(tr.mid) : '';
-      if (!mid || !/^https?:/i.test(String(tr.url ?? '')) || urlRetried.has(mid)) {
+      const sourceUrl = String(tr.url ?? '');
+      const retryKey = mid || localTrackKey(tr);
+      if (
+        !retryKey ||
+        !/^https?:/i.test(sourceUrl) ||
+        urlRetried.has(retryKey)
+      ) {
         return;
       }
-      urlRetried.add(mid);
-      const fresh = await getPreferredSongUrls([mid], true);
-      const url = fresh?.[mid];
-      if (!url || url === tr.url) {
+      urlRetried.add(retryKey);
+      let url = sourceUrl;
+      if (mid) {
+        try {
+          const fresh = await getPreferredSongUrls([mid], true);
+          url = fresh?.[mid] || sourceUrl;
+        } catch (e) {
+          // 直链刷新失败时保持当前音源，避免无谓重建。
+        }
+      }
+      // 同 URL 说明地址没有失效，不在 JS 层 reload，避免打断原生解码器。
+      if (url === sourceUrl) {
         return;
       }
+      const {position, duration} = await TrackPlayer.getProgress().catch(() => ({position: 0, duration: 0}));
+      const knownDuration = Number(duration || tr.duration || 0);
       await TrackPlayer.load({...tr, url});
+      // 仅在 URL 确实更新时恢复原播放位置；这不是坏帧恢复路径。
+      const currentPosition = Math.max(Number(position) || 0, 0);
+      const target = Math.min(
+        currentPosition,
+        knownDuration > 0
+          ? Math.max(knownDuration - 0.1, 0)
+          : currentPosition,
+      );
+      await seekTo(target, {timeoutMs: 4500}).catch(() => {});
       await TrackPlayer.play();
       saveQueueSnapshot().catch(() => {});
     } catch (e) {

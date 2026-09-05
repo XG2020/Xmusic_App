@@ -69,7 +69,27 @@ async function swapToCachedIfOffline(shouldResume: boolean) {
     }
     const {position} = await TrackPlayer.getProgress();
     await TrackPlayer.load({...active, url: `file://${path}`});
-    await TrackPlayer.seekTo(position);
+    // load() 后 Android 播放器通常还在 Loading；过早 seek 会被原生丢弃，
+    // 造成 UI 显示已切到本地但声音仍从旧位置/0 秒开始。等待可定位状态，
+    // 并确认进度真的改变，必要时再补 seek。
+    const target = Math.max(0, Number(position) || 0);
+    const deadline = Date.now() + 5000;
+    let applied = false;
+    while (Date.now() < deadline) {
+      const state = (await TrackPlayer.getPlaybackState()).state;
+      if (state !== State.Loading && state !== State.None) {
+        await TrackPlayer.seekTo(target).catch(() => {});
+        const progress = await TrackPlayer.getProgress().catch(() => ({position: 0}));
+        if (Math.abs(Number(progress.position) - target) <= 1.5) {
+          applied = true;
+          break;
+        }
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 100));
+    }
+    if (!applied) {
+      await TrackPlayer.seekTo(target).catch(() => {});
+    }
     if (shouldResume) {
       await TrackPlayer.play();
     }
