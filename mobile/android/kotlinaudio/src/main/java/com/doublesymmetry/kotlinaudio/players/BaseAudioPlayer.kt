@@ -243,9 +243,19 @@ abstract class BaseAudioPlayer internal constructor(
         val playerToUse =
             if (playerConfig.interceptPlayerActionsTriggeredExternally) createForwardingPlayer() else exoPlayer
 
+        // ExoPlayer may keep playWhenReady=true while audio focus is temporarily
+        // suppressing playback. The notification and media session use this
+        // value to choose the play/pause icon, so expose the synchronized
+        // player state without changing ExoPlayer's auto-resume behavior.
+        val sessionPlayer = object : ForwardingPlayer(playerToUse) {
+            override fun getPlayWhenReady(): Boolean {
+                return playerToUse.playWhenReady && playerState != AudioPlayerState.PAUSED
+            }
+        }
+
         notificationManager = NotificationManager(
             context,
-            playerToUse,
+            sessionPlayer,
             mediaSession,
             mediaSessionConnector,
             notificationEventHolder,
@@ -270,7 +280,7 @@ abstract class BaseAudioPlayer internal constructor(
                 )
                 .build();
             exoPlayer.setAudioAttributes(audioAttributes, playerConfig.handleAudioFocus);
-            mediaSessionConnector.setPlayer(playerToUse)
+            mediaSessionConnector.setPlayer(sessionPlayer)
             mediaSessionConnector.setMediaMetadataProvider {
                 notificationManager.getMediaMetadataCompat()
             }

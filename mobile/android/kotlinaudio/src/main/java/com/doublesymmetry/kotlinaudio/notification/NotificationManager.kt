@@ -37,6 +37,7 @@ import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.ui.PlayerNotificationManager.CustomActionReceiver
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import okhttp3.Headers
 import okhttp3.Headers.Companion.toHeaders
@@ -100,9 +101,19 @@ class NotificationManager internal constructor(
     private val buttons = mutableSetOf<NotificationButton?>()
     private var invalidateThrottleCount = 0
     private var iconPlaceholder = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
-
     private var notificationMetadataBitmap: Bitmap? = null
     private var notificationMetadataArtworkDisposable: Disposable? = null
+
+    init {
+        scope.launch {
+            playerEventHolder.stateChange.collect {
+                // Audio-focus changes are exposed through KotlinAudio's state
+                // flow, but PlayerNotificationManager may not rebuild its
+                // actions for that transition. Re-evaluate the play/pause icon.
+                invalidate()
+            }
+        }
+    }
 
     /**
      * The item that should be used for the notification
