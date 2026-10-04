@@ -17,8 +17,9 @@ const MAX_LYRICS_BYTES = 2 * 1024 * 1024;
 const MAX_API_BYTES = 4 * 1024 * 1024;
 const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const DOWNLOAD_QUALITIES = ['128', '320', 'flac'];
-//配置默认的base url
-const DEFAULT_BASE_URL = '';
+// The built-in origin stays out of source. Tests and private builds inject an HTTPS
+// origin with no credentials, query, fragment, or required path through this variable.
+const DEFAULT_BASE_URL = process.env.XMUSIC_BUILTIN_BASE_URL || '';
 const QQ_CATEGORY_PATH = '/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg';
 const QQ_PLAYLIST_PATH = '/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg';
 const QQ_TOP_PATH = '/cgi-bin/musicu.fcg';
