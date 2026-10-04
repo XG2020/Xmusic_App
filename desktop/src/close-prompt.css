@@ -1,0 +1,32 @@
+.close-prompt { width: min(440px, calc(100vw - 48px)); max-height: calc(100vh - 48px); margin: auto; padding: 0; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 20px; color: var(--text); background: var(--surface-raised); box-shadow: 0 24px 90px var(--shadow); outline: none; -webkit-app-region: no-drag; }
+.close-prompt::backdrop { background: #0007; backdrop-filter: blur(7px); }
+.close-prompt-content { padding: 25px; }
+.close-prompt-header { display: flex; align-items: center; justify-content: space-between; margin: -4px -6px 22px 0; }
+.close-prompt-brand { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.close-prompt-brand img { width: 25px; height: 25px; object-fit: contain; }
+.close-prompt h2 { margin: 0; font-size: 23px; font-weight: 650; line-height: 1.5; }
+.close-prompt-description { margin: 7px 0 22px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.close-prompt-options { display: flex; flex-direction: column; gap: 11px; }
+.close-prompt-option { display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: left; }
+.close-prompt-option:hover { border-color: var(--border-strong); background: var(--hover); }
+.close-prompt-option-icon { display: grid; place-items: center; width: 39px; height: 39px; flex-shrink: 0; border-radius: 11px; color: var(--muted); background: var(--surface-raised); }
+.close-prompt-option > span:last-child { min-width: 0; }
+.close-prompt-option strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.6; }
+.close-prompt-option small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.close-prompt-hide { border-color: var(--accent-border); background: var(--accent-soft); }
+.close-prompt-hide:hover { border-color: var(--accent); background: var(--accent-soft-strong); }
+.close-prompt-hide .close-prompt-option-icon { color: var(--accent); background: var(--accent-soft-strong); }
+.close-prompt-quit:hover .close-prompt-option-icon { color: var(--danger); }
+.close-prompt-remember { display: flex; align-items: center; gap: 9px; margin-top: 19px; color: var(--text); font-size: 12px; cursor: pointer; }
+.close-prompt-remember input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-fill); cursor: pointer; }
+.close-prompt-remember input:disabled { cursor: default; }
+.close-prompt-remember-help { margin: 6px 0 0 24px; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.close-prompt-notice { margin: 16px 0 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); background: var(--surface); font-size: 11px; line-height: 1.8; }
+.close-prompt-error { margin: 14px 0 0; color: var(--danger); font-size: 12px; line-height: 1.8; }
+.close-prompt footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 23px; }
+.close-prompt-progress { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.close-prompt-progress svg { animation: close-prompt-spin 1s linear infinite; }
+.close-prompt footer .secondary-button { min-width: 78px; }
+.close-prompt button:focus-visible { outline-offset: 3px; }
+@keyframes close-prompt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .close-prompt-progress svg { animation: none; } }

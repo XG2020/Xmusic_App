@@ -1,0 +1,9 @@
+.behavior-settings .behavior-setting-row { display: flex; align-items: center; gap: 13px; padding: 20px 0; }
+.behavior-setting-row + .behavior-setting-row { border-top: 1px solid var(--border); }
+.behavior-setting-row > svg { color: var(--muted); flex-shrink: 0; }
+.behavior-setting-row > label { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; cursor: pointer; }
+.behavior-setting-row strong { color: var(--text); font-size: 13px; font-weight: 500; }
+.behavior-setting-row small { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.behavior-setting-row select { width: 145px; flex-shrink: 0; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text); background: var(--surface-inset); font-size: 12px; }
+.behavior-setting-row select:disabled { opacity: .5; cursor: default; }
+.behavior-settings-error { margin-top: 6px; color: var(--danger); font-size: 12px; line-height: 1.8; }

@@ -1,0 +1,39 @@
+.theme-background-section .theme-background-toggle {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 32px;
+  cursor: default;
+}
+
+.floating-image-preview {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 94px;
+  margin: 12px 0;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: repeating-conic-gradient(var(--surface) 0% 25%, var(--surface-raised) 0% 50%) 0 / 18px 18px;
+}
+
+.floating-image-preview-background {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-color: #0c110f;
+  background-position: center;
+  background-size: cover;
+  pointer-events: none;
+}
+
+.floating-image-preview > span {
+  color: var(--accent-fill);
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 5px #000;
+}

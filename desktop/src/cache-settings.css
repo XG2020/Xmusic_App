@@ -1,0 +1,9 @@
+.cache-settings-summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0 18px; }
+.cache-settings-summary > div { display: grid; gap: 7px; }
+.cache-settings-summary > div > span { color: var(--muted); font-size: 12px; }
+.cache-settings-summary strong { color: var(--text); font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cache-settings-summary small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.cache-settings-summary .secondary-button { flex-shrink: 0; }
+.cache-settings-message, .cache-settings-error { font-size: 12px; line-height: 1.8; margin-top: 10px; }
+.cache-settings-message { color: var(--accent); }
+.cache-settings-error { color: var(--danger); }

@@ -1,10 +1,10 @@
 # Xmusic(QMusicLite)
 
-一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线，界面方向偏 QQ 音乐风格。
+一个以安卓为主、可继续扩展到多平台的音乐播放器项目，参考 MusicFree 的技术路线，界面方向偏 QQ 音乐安卓版。
 
 当前版本：`1.1.6`
 
-## 1.1.6 更新日志
+## 1.1.6 更新日志（2026-09-05）
 
 ### 歌单与批量操作
 
@@ -29,8 +29,12 @@
 - 进度定位增加原生播放器状态等待和真实位置确认，避免 seek 请求在播放器初始化或 Loading 阶段被丢弃。
 - 拖动进度条后会验证音频是否从目标位置继续前进；定位失败时自动重新激活当前歌曲并再次定位。
 - Android 播放器接入自编译 ExoPlayer FFmpeg 扩展和 FFmpeg native decoder，覆盖 MP3/FLAC/AAC/Vorbis/Opus/ALAC，并启用 decoder fallback。
+- JS 层已移除针对坏帧的定时 seek/reload，损坏帧交给原生解码线程处理，避免播放中途被 JS 重建音源打断。
 - 网络直链仅在确认地址失效时刷新，正常 Buffering 不触发重载。
 
+### 工程维护
+
+- 增加 `.jest-cache/` 忽略规则，测试缓存不会被提交到 GitHub。
 ## 已接入能力
 
 ### 在线音乐
@@ -97,7 +101,7 @@ npm run build-android
 GitHub Actions：
 
 - 已提供 `.github/workflows/android.yml`
-- 推送到 `main` 或 `master` 后会自动构建
+- 在仓库 Actions 中选择 `Android APK`，点击 `Run workflow` 手动构建；推送代码不会自动运行
 - 构建产物在 Actions 的 Artifacts 中下载
 
 ## 目录结构

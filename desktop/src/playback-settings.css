@@ -1,0 +1,37 @@
+.playback-settings { position: relative; display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.playback-setting-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 30px; padding: 0 7px; border-radius: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.playback-setting-trigger:hover, .playback-setting-trigger.selected { color: var(--accent); background: var(--accent-soft); }
+.quality-trigger { border: 1px solid var(--accent-border); color: var(--accent); font-size: 10px; font-weight: 650; min-width: 43px; }
+.speed-trigger { min-width: 35px; }
+.sleep-trigger { min-width: 29px; }
+.sleep-trigger span { font-size: 10px; }
+.playback-settings-panel { position: absolute; bottom: calc(100% + 24px); right: 0; width: 270px; max-height: min(520px, calc(100vh - 160px)); overflow-y: auto; padding: 17px; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border-strong); border-radius: 13px; box-shadow: 0 14px 44px var(--shadow); z-index: 12; }
+.playback-settings-panel header { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 14px; font-size: 13px; }
+.settings-panel-close { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 5px; color: var(--muted); }
+.settings-panel-close:hover { background: var(--accent-soft); color: var(--text); }
+.playback-settings-panel p { color: var(--muted); margin: 13px 0 0; font-size: 11px; line-height: 1.7; }
+.quality-options { display: grid; gap: 5px; }
+.quality-options button { display: flex; align-items: center; justify-content: space-between; padding: 10px; border-radius: 7px; text-align: left; color: var(--text); font-size: 12px; }
+.quality-options button small { margin-left: 9px; font-size: 10px; color: var(--muted); }
+.quality-options button:hover, .quality-options button[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent); }
+.speed-options, .sleep-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.speed-options button, .sleep-presets button { padding: 9px 3px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); font-size: 12px; }
+.speed-options button:hover, .speed-options button[aria-pressed='true'], .sleep-presets button:hover { border-color: var(--accent-border); color: var(--accent); background: var(--accent-soft); }
+.sleep-presets { grid-template-columns: repeat(4, 1fr); }
+.sleep-presets button { font-size: 11px; }
+.sleep-timer-status { display: flex; gap: 10px; align-items: center; padding: 8px 0 19px; color: var(--muted); }
+.sleep-timer-status strong, .sleep-timer-status span { display: block; }
+.sleep-timer-status strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sleep-timer-status span { font-size: 11px; margin-top: 5px; }
+.sleep-timer-status.active, .sleep-timer-status.active strong { color: var(--accent); }
+.sleep-timer-status.active strong { font-size: 25px; }
+.sleep-custom { margin-top: 16px; }
+.sleep-custom label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; }
+.sleep-custom > div { display: flex; gap: 7px; }
+.sleep-custom input { min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-inset); color: var(--text); font-size: 12px; }
+.sleep-custom button { flex-shrink: 0; padding: 8px 12px; background: var(--accent-fill); color: var(--accent-contrast); font-size: 11px; border-radius: 6px; }
+.sleep-custom button:hover { background: var(--accent-hover); color: var(--accent-hover-contrast); }
+.sleep-cancel { display: block; width: 100%; margin-top: 13px; padding: 8px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.sleep-cancel:hover { color: var(--text); border-color: var(--border-strong); }
+.sleep-validation { color: var(--text) !important; }
+.playback-settings-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

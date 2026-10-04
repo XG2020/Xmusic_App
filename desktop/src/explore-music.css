@@ -1,0 +1,112 @@
+.discovery { min-width: 0; padding-bottom: 24px; }
+.discovery-tabs { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+.discovery-capsule { flex-shrink: 0; padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--muted); font-size: 11px; white-space: nowrap; }
+.discovery-capsule:hover { color: var(--text); background: var(--hover); }
+.discovery-capsule.is-active { color: var(--accent-contrast); background: var(--accent-fill); border-color: var(--accent-fill); font-weight: 600; }
+.discovery-tabs .discovery-capsule { padding: 9px 23px; font-size: 13px; }
+.discovery-section + .discovery-section { margin-top: 32px; }
+.discovery-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 17px; }
+.discovery-section-heading h2 { font-size: 18px; font-weight: 650; }
+.discovery-section-heading > span { font-size: 11px; color: var(--subtle); }
+.discovery-more { display: inline-flex; align-items: center; gap: 6px; padding: 6px 0 6px 10px; color: var(--muted); font-size: 11px; }
+.discovery-more:hover { color: var(--accent); }
+.discovery-artwork { display: grid; flex-shrink: 0; place-items: center; overflow: hidden; border-radius: 10px; background: linear-gradient(135deg, var(--cover-start), var(--cover-end)); color: var(--accent); aspect-ratio: 1; }
+.discovery-artwork img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.discovery-artwork > svg { width: 35%; height: 35%; }
+.discovery-rank-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.discovery-rank-card { display: flex; align-items: center; gap: 15px; min-width: 0; padding: 16px; text-align: left; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface) 82%, transparent); }
+.discovery-rank-card:hover { border-color: var(--accent-border); background: var(--hover); }
+.discovery-rank-card > .discovery-artwork { width: 88px; }
+.discovery-rank-card > div:nth-child(2) { flex: 1; min-width: 0; }
+.discovery-rank-card h3 { font-size: 14px; margin-bottom: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-rank-card ol { margin: 0; padding: 0; list-style: none; }
+.discovery-rank-card li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 1.95; color: var(--muted); }
+.discovery-rank-card li > span { display: inline-block; width: 16px; font-weight: 600; color: var(--accent); }
+.discovery-rank-card small { font-size: inherit; color: var(--subtle); }
+.discovery-rank-card p { color: var(--muted); font-size: 11px; }
+.discovery-rank-arrow { flex-shrink: 0; color: var(--subtle); }
+.discovery-playlist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 24px 18px; }
+.discovery-playlist-card { display: flex; min-width: 0; flex-direction: column; text-align: left; padding: 0; }
+.discovery-playlist-cover { position: relative; width: 100%; margin-bottom: 11px; }
+.discovery-playlist-cover > .discovery-artwork { width: 100%; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.discovery-playlist-card:hover .discovery-artwork { box-shadow: 0 7px 20px var(--shadow); }
+.discovery-playlist-card h3 { width: 100%; color: var(--text); font-size: 12px; font-weight: 500; line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.discovery-playlist-card p { max-width: 100%; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-card-play { position: absolute; right: 10px; bottom: 10px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: var(--accent-contrast); background: var(--accent-fill); opacity: 0; transform: translateY(4px); transition: opacity .15s, transform .15s; }
+.discovery-playlist-card:hover .discovery-card-play, .discovery-playlist-card:focus-visible .discovery-card-play { opacity: 1; transform: translateY(0); }
+.discovery-listen { display: flex; align-items: center; gap: 4px; position: absolute; top: 9px; right: 8px; padding: 4px 7px; border-radius: 20px; background: #0009; color: #fff; font-size: 9px; }
+.discovery-status { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; min-height: 190px; padding: 26px; color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+.discovery-status > svg { color: var(--accent); }
+.discovery-status.is-compact { min-height: 64px; margin-bottom: 18px; padding: 15px; flex-direction: row; flex-wrap: wrap; }
+.discovery-pagination { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 28px; color: var(--subtle); font-size: 11px; }
+.discovery-pagination > p { color: var(--danger); }
+.discovery-capsule-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 24px; min-width: 0; }
+.discovery-capsule-scroll { display: flex; flex: 1; gap: 8px; min-width: 0; overflow-x: auto; padding: 4px 3px 10px; scroll-padding: 4px; }
+.discovery-capsule-scroll:focus-within { scroll-behavior: smooth; }
+.discovery-expand { flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 12px 4px 10px 8px; color: var(--muted); font-size: 11px; }
+.discovery-expand:hover { color: var(--accent); }
+.discovery-capsule-bar.is-expanded .discovery-capsule-scroll { flex-wrap: wrap; overflow: visible; }
+.discovery-category-panel { display: flex; flex-direction: column; gap: 21px; padding: 22px; margin-bottom: 24px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
+.discovery-category-group { display: flex; align-items: flex-start; gap: 18px; }
+.discovery-category-group h3 { flex: 0 0 50px; padding-top: 9px; font-size: 12px; color: var(--text); }
+.discovery-category-group > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.discovery-back { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-bottom: 18px; padding: 5px 0; }
+.discovery-back:hover { color: var(--accent); }
+.discovery-detail-header { display: flex; align-items: center; gap: 24px; padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--surface) 80%, transparent); margin-bottom: 24px; }
+.discovery-detail-header > .discovery-artwork { width: 160px; }
+.discovery-detail-copy { min-width: 0; flex: 1; }
+.discovery-eyebrow { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 9px; color: var(--accent); font-size: 10px; }
+.discovery-detail-copy h2 { font-size: 24px; font-weight: 650; line-height: 1.45; overflow-wrap: anywhere; }
+.discovery-detail-copy p { color: var(--muted); font-size: 11px; line-height: 1.8; margin-top: 8px; }
+.discovery-detail-copy .discovery-introduction { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 680px; }
+.discovery-detail-copy .primary-button { margin-top: 18px; }
+.discovery-detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.discovery-detail-actions .primary-button { margin-top: 0; }
+.discovery-rank-header > .discovery-artwork { width: 128px; }
+.discovery-track-row { display: grid; grid-template-columns: 30px minmax(145px, 1fr) minmax(70px, .55fr) 40px var(--track-actions-width, 155px); align-items: center; gap: 12px; min-height: 64px; padding: 8px 12px; border-radius: 7px; }
+.discovery-track-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.track-local-badge { display: inline-block; margin-right: 5px; padding: 0 4px; border-radius: 3px; color: var(--accent); background: var(--accent-soft); font-size: 9px; }
+.discovery-track-row:not(.discovery-track-head):hover { background: var(--hover); }
+.discovery-track-row.is-current { background: var(--accent-soft); }
+.discovery-track-row.is-current .discovery-track-title, .discovery-track-row.is-current .discovery-track-number { color: var(--accent); }
+.discovery-track-head { min-height: 34px; margin-bottom: 5px; border-radius: 0; border-bottom: 1px solid var(--border); color: var(--subtle); font-size: 10px; }
+.discovery-track-number { display: grid; place-items: center; width: 30px; height: 34px; padding: 0; font-size: 10px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+.discovery-track-number span + svg { display: none; }
+.discovery-track-row:hover .discovery-track-number span, .discovery-track-number:focus-visible span { display: none; }
+.discovery-track-row:hover .discovery-track-number span + svg, .discovery-track-number:focus-visible span + svg { display: block; }
+.discovery-track-info { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.discovery-track-info .discovery-artwork { width: 40px; border-radius: 6px; }
+.discovery-track-info > div:last-child { min-width: 0; }
+.discovery-track-title { display: block; max-width: 100%; padding: 0; text-align: left; color: var(--text); font-size: 12px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-track-title:hover { color: var(--accent); }
+.discovery-track-info > div > span { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-album { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-duration { font-size: 10px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+.discovery-track-actions { display: flex; justify-content: flex-end; gap: 0; }
+.discovery-track-actions .icon-button { width: 31px; height: 31px; }
+.discovery-action-status { display: flex; align-items: center; gap: 9px; margin: 12px 0; color: var(--muted); font-size: 11px; }
+.discovery-filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.discovery-list-search { display: flex; align-items: center; gap: 8px; width: min(340px, 100%); min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-inset); color: var(--muted); }
+.discovery-list-search:focus-within { border-color: var(--accent); }
+.discovery-list-search input { width: 0; flex: 1; min-width: 0; padding: 8px 0; color: var(--text); background: transparent; border: 0; font-size: 12px; }
+.discovery-list-search input::-webkit-search-cancel-button { appearance: none; }
+.discovery-list-search .icon-button { width: 24px; height: 28px; flex-shrink: 0; }
+.discovery-list-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-height: 40px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+.discovery-list-toolbar .secondary-button { padding: 7px 10px; gap: 5px; font-size: 10px; }
+.discovery-select-all { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.discovery-select-all input, .discovery-track-select { accent-color: var(--accent-fill); width: 15px; height: 15px; cursor: pointer; }
+.discovery-track-select { margin-left: 7px; }
+.discovery-batch-toggle { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; padding: 7px 0 7px 7px; margin-left: auto; }
+.discovery-batch-toggle:hover { color: var(--accent); }
+@media (max-width: 1120px) {
+  .discovery-rank-card { padding: 12px; gap: 11px; }
+  .discovery-rank-card > .discovery-artwork { width: 70px; }
+  .discovery-rank-arrow { display: none; }
+  .discovery-playlist-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px 14px; }
+  .discovery-detail-header > .discovery-artwork { width: 128px; }
+  .discovery-detail-copy h2 { font-size: 21px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .discovery-card-play { transition: none; }
+  .discovery-capsule-scroll:focus-within { scroll-behavior: auto; }
+}

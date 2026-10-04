@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xmusic 托盘菜单</title>
+  <link rel="stylesheet" href="tray-menu.css">
+</head>
+<body>
+  <main role="dialog" aria-label="Xmusic 托盘菜单">
+    <div class="playback-controls" role="group" aria-label="播放控制">
+      <button type="button" class="transport" id="previous" data-command="previous" aria-label="上一首" title="上一首" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M5 5h3v14H5zm14 0v14L8 12z"/></svg>
+      </button>
+      <button type="button" class="transport primary" id="toggle" data-command="toggle" aria-label="播放" title="播放" disabled>
+        <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="m8 4 12 8-12 8z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+      </button>
+      <button type="button" class="transport" id="next" data-command="next" aria-label="下一首" title="下一首" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M16 5h3v14h-3zM5 5l11 7-11 7z"/></svg>
+      </button>
+    </div>
+    <div class="song-row">
+      <button type="button" class="icon-button" id="favorite" data-command="favorite" aria-label="收藏到我喜欢" aria-pressed="false" title="收藏到我喜欢" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.9a5.5 5.5 0 0 0-7.8 0L12 6l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.3a5.5 5.5 0 0 0 0-7.8Z"/></svg>
+      </button>
+      <div class="song-info"><p id="song-title">Xmusic</p><p id="song-artist" hidden></p></div>
+      <button type="button" class="icon-button" id="queue" data-command="queue" aria-label="打开播放队列" title="打开播放队列">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h17M3 12h17M3 19h17M17 2l3 3"/></svg>
+      </button>
+    </div>
+    <div class="separator" role="separator"></div>
+    <div class="volume-row" role="group" aria-label="音量控制">
+      <button type="button" class="icon-button" id="mute" data-command="mute" aria-label="静音" aria-pressed="false" title="静音">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 3-6 5H2v8h3l6 5z"/><path class="sound-wave" d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="mute-mark" d="m16 9 6 6m0-6-6 6"/></svg>
+      </button>
+      <input id="volume" type="range" min="0" max="100" step="1" value="75" aria-label="音量" aria-valuetext="75%">
+    </div>
+    <button type="button" class="lyrics-row" id="lyrics" data-command="lyrics" role="switch" aria-checked="false">
+      <span class="lyrics-icon" aria-hidden="true">词</span><span>显示桌面歌词</span>
+      <svg class="check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+    </button>
+    <footer>
+      <button type="button" class="show-main" data-command="show-main">显示软件</button>
+      <button type="button" class="quit" data-command="quit">退出软件</button>
+    </footer>
+  </main>
+  <script src="tray-menu.js"></script>
+</body>
+</html>

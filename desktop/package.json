@@ -1,0 +1,80 @@
+{
+  "name": "xmusic-desktop",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Xmusic Windows music player",
+  "author": "Xmusic",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "test": "vitest run && node --test electron/*.test.cjs",
+    "test:smoke": "node scripts/smoke.mjs",
+    "pack:win": "npm run build && electron-builder --win --x64 --dir",
+    "dist:win": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "music-metadata": "^11.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "electron": "^44.4.4",
+    "electron-builder": "^26.0.12",
+    "jsdom": "^27.4.0",
+    "playwright": "^1.63.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0",
+    "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "build": {
+    "appId": "com.xmusic.desktop",
+    "productName": "Xmusic",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*.cjs",
+      "electron/*.html",
+      "electron/*.css",
+      "electron/*.js",
+      "resources/icon.png",
+      "resources/icon.ico",
+      "!electron/**/*.test.cjs"
+    ],
+    "asar": true,
+    "electronDownload": {
+      "cache": ".electron-cache"
+    },
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "Xmusic-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "Xmusic-${version}-portable.${ext}"
+    }
+  }
+}

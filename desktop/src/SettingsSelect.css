@@ -1,0 +1,36 @@
+.settings-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex: 0 1 200px;
+  width: 200px;
+  min-width: 145px;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-inset);
+  color: var(--text);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--shadow) 25%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.settings-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-select > svg { flex-shrink: 0; color: var(--muted); transition: transform .15s; }
+.settings-select[aria-expanded='true'] { border-color: var(--accent); }
+.settings-select[aria-expanded='true'] > svg { transform: rotate(180deg); }
+.settings-select:hover:not(:disabled) { border-color: var(--accent-border); }
+.settings-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.settings-select:disabled { opacity: .5; cursor: default; }
+.settings-select-listbox { position: fixed; z-index: 1000; box-sizing: border-box; max-width: calc(100vw - 16px); overflow: auto; padding: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: 0 10px 32px var(--shadow); }
+.settings-select-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: 12px; line-height: 1.5; cursor: pointer; }
+.settings-select-option > span { overflow-wrap: anywhere; }
+.settings-select-option > svg { flex-shrink: 0; }
+.settings-select-option.highlighted { color: var(--accent); background: var(--accent-soft); }
+.settings-select-option[aria-selected='true'] { color: var(--accent); font-weight: 600; }
+.settings-select-option .unselected-check { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .settings-select > svg { transition: none; } }
