@@ -6,6 +6,9 @@ Windows 桌面播放器，使用 Electron、React 和 TypeScript。当前版本 
 
 需要 Windows 10/11 x64、Node.js **22.12.0 或更高版本**以及 npm。CI 使用 Node.js 24。首次运行和打包需要联网下载依赖、Electron 运行时及打包工具。Electron 44 会在首次调用时按需下载运行时；`npm ci` 成功不代表已下载 Windows 二进制。
 
+内置api接口填写位置：desktop/electron/core.cjs
+` const DEFAULT_BASE_URL = ''` 
+
 在仓库根目录执行：
 
 ```powershell
