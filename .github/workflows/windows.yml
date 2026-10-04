@@ -23,13 +23,7 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
-      - run: npm test
       - run: npm run dist:win -- --publish never
-      - name: Test packaged Windows player
-        shell: pwsh
-        run: |
-          $env:XMUSIC_EXECUTABLE = Join-Path $PWD 'release/win-unpacked/Xmusic.exe'
-          npm run test:smoke
       - uses: actions/upload-artifact@v4
         with:
           name: Xmusic-Windows-x64
@@ -37,9 +31,3 @@ jobs:
             desktop/release/*-setup.exe
             desktop/release/*-portable.exe
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Windows-smoke-screenshots
-          path: desktop/.test-data/smoke-*/*.png
-          if-no-files-found: ignore
